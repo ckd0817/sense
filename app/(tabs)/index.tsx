@@ -92,22 +92,15 @@ export default function TodayScreen() {
               </TouchableOpacity>
             </View>
 
-            <TodoSection todos={todos} onChanged={loadToday} />
-
-            {records.length === 0 ? (
-              <View style={s.empty}>
-                <Text style={s.emptyTitle}>新的一天</Text>
-                <Text style={s.emptySub}>点击「记录」开始</Text>
-              </View>
-            ) : (
-              <FlatList
-                data={records}
-                keyExtractor={item => item.id}
-                renderItem={({ item }) => <ActivityBlock record={item} onChanged={loadToday} />}
-                contentContainerStyle={s.list}
-                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadToday(); setRefreshing(false); }} tintColor={Colors.hint} />}
-              />
-            )}
+            <FlatList
+              data={records}
+              keyExtractor={item => item.id}
+              renderItem={({ item }) => <ActivityBlock record={item} onChanged={loadToday} />}
+              ListHeaderComponent={todos.length > 0 ? <TodoSection todos={todos} onChanged={loadToday} /> : null}
+              ListEmptyComponent={<View style={s.empty}><Text style={s.emptyTitle}>新的一天</Text><Text style={s.emptySub}>点击「记录」开始</Text></View>}
+              contentContainerStyle={s.list}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadToday(); setRefreshing(false); }} tintColor={Colors.hint} />}
+            />
           </>
         ) : (
           <>

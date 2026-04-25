@@ -133,7 +133,6 @@ const s = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderRadius: R.lg,
     padding: S.md,
-    marginHorizontal: S.lg,
     marginBottom: S.md,
   },
   header: {
