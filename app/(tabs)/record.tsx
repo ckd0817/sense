@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, Keyboard, Platform, Alert } from 'react-native';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, Keyboard, Platform, Alert, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getChatMessages, addChatMessage, clearChatMessages, getChatDate, ChatMessage } from '../../lib/db';
@@ -68,11 +68,17 @@ function renderMarkdown(md: string, baseStyle: any): React.ReactNode {
   return <Text>{parts}</Text>;
 }
 
+interface ToolInfo {
+  name: string;
+  success: boolean;
+  args?: Record<string, unknown>;
+}
+
 interface Bubble {
   id: string;
   role: 'user' | 'assistant';
   text: string;
-  tools: { name: string; success: boolean }[];
+  tools: ToolInfo[];
   streaming?: boolean;
 }
 
@@ -171,6 +177,8 @@ export default function RecordScreen() {
     try {
       let fullContent = '';
       const toolResults: { name: string; success: boolean }[] = [];
+      const pendingArgs = new Map<number, Record<string, unknown>>();
+      let toolIdx = 0;
 
       for await (const event of streamAgent(historyRef.current)) {
         if (event.type === 'text_delta') {
@@ -179,11 +187,13 @@ export default function RecordScreen() {
             b.id === asstId ? { ...b, text: fullContent } : b
           ));
         } else if (event.type === 'tool_call') {
-          // Show tool call happening
+          pendingArgs.set(toolIdx, event.args);
         } else if (event.type === 'tool_result') {
+          const args = pendingArgs.get(toolIdx);
+          toolIdx++;
           toolResults.push({ name: event.name, success: event.result.success });
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, tools: [...b.tools, { name: event.name, success: event.result.success }] } : b
+            b.id === asstId ? { ...b, tools: [...b.tools, { name: event.name, success: event.result.success, args }] } : b
           ));
         } else if (event.type === 'done') {
           setBubbles(prev => prev.map(b =>
@@ -232,6 +242,33 @@ export default function RecordScreen() {
     delete_todo: '删除待办',
   };
 
+  const fieldLabel: Record<string, string> = {
+    activity: '活动', category: '分类', start_time: '开始时间', end_time: '结束时间',
+    details: '详情', mood: '心情', social: '社交', location: '地点',
+    title: '标题', recurring: '每日重复', scheduled_time: '计划时间',
+    reminder_advance: '提前提醒', completed: '已完成', new_title: '新标题',
+  };
+
+  const formatFieldValue = (key: string, value: unknown): string => {
+    if (value === null || value === undefined || value === '') return '-';
+    if (typeof value === 'boolean') return value ? '是' : '否';
+    if (typeof value === 'number') return key === 'reminder_advance' ? `${value} 分钟` : String(value);
+    const str = String(value);
+    if ((key.endsWith('_time') || key === 'scheduled_time') && str.includes('T')) {
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) {
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mi = String(d.getMinutes()).padStart(2, '0');
+        return `${mm}-${dd} ${hh}:${mi}`;
+      }
+    }
+    return str;
+  };
+
+  const [detailTool, setDetailTool] = useState<ToolInfo | null>(null);
+
   const renderItem = ({ item }: { item: Bubble }) => (
     <View style={[s.bubble, item.role === 'user' ? s.bubbleUser : s.bubbleAsst]}>
       {item.text ? (
@@ -244,9 +281,9 @@ export default function RecordScreen() {
       {item.tools.length > 0 && (
         <View style={s.toolRow}>
           {item.tools.map((tool, i) => (
-            <View key={i} style={[s.toolTag, tool.success ? s.toolOk : s.toolFail]}>
+            <TouchableOpacity key={i} style={[s.toolTag, tool.success ? s.toolOk : s.toolFail]} onPress={() => setDetailTool(tool)} activeOpacity={0.6}>
               <Text style={s.toolTagText}>{tool.success ? '✓' : '✗'} {toolLabel[tool.name] || tool.name}</Text>
-            </View>
+            </TouchableOpacity>
           ))}
         </View>
       )}
@@ -298,6 +335,38 @@ export default function RecordScreen() {
           </TouchableOpacity>
         </View>
       </View>
+      <Modal visible={!!detailTool} transparent animationType="fade" onRequestClose={() => setDetailTool(null)}>
+        <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => setDetailTool(null)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.modalHeader}>
+              <Text style={s.modalTitle}>{detailTool ? (toolLabel[detailTool.name] || detailTool.name) : ''}</Text>
+              <TouchableOpacity onPress={() => setDetailTool(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close" size={20} color={Colors.hint} />
+              </TouchableOpacity>
+            </View>
+            {detailTool?.args && Object.keys(detailTool.args).length > 0 ? (
+              <View style={s.modalBody}>
+                {Object.entries(detailTool.args).map(([key, value]) => (
+                  <View key={key} style={s.fieldRow}>
+                    <Text style={s.fieldLabel}>{fieldLabel[key] || key}</Text>
+                    <Text style={s.fieldValue}>{formatFieldValue(key, value)}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text style={s.modalEmpty}>无参数信息</Text>
+            )}
+            {!detailTool?.success && detailTool?.args && (
+              <View style={s.modalBody}>
+                <View style={[s.fieldRow, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.divider }]}>
+                  <Text style={s.fieldLabel}>执行结果</Text>
+                  <Text style={[s.fieldValue, { color: '#D32F2F' }]}>失败</Text>
+                </View>
+              </View>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -412,4 +481,62 @@ const s = StyleSheet.create({
   },
   sendOff: { opacity: 0.35 },
   sendText: { color: '#fff', fontSize: F.md, fontWeight: '600' },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: S.xl,
+  },
+  modalCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: R.lg,
+    width: '100%',
+    maxWidth: 340,
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: S.lg,
+    paddingTop: S.md,
+    paddingBottom: S.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.divider,
+  },
+  modalTitle: {
+    fontSize: F.md,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  modalBody: {
+    paddingHorizontal: S.lg,
+    paddingVertical: S.sm,
+  },
+  modalEmpty: {
+    padding: S.xl,
+    textAlign: 'center',
+    color: Colors.hint,
+    fontSize: F.sm,
+  },
+  fieldRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    paddingVertical: S.xs + 1,
+    gap: S.md,
+  },
+  fieldLabel: {
+    fontSize: F.sm,
+    color: Colors.subtext,
+    flexShrink: 0,
+  },
+  fieldValue: {
+    fontSize: F.sm,
+    color: Colors.text,
+    fontWeight: '500',
+    textAlign: 'right',
+    flex: 1,
+  },
 });

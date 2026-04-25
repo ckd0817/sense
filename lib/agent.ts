@@ -1,4 +1,4 @@
-import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, completeTodo, uncompleteTodo, findTodoByTitle, insertActivity, getTodayRecords, updateRecord, deleteRecord, getSystemPrompt } from './db';
+import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, completeTodo, uncompleteTodo, findTodoByTitle, insertActivity, getTodayRecords, updateRecord, deleteRecord, getSystemPrompt, Record as ActivityRecord } from './db';
 import { scheduleTodoReminder, cancelTodoReminder } from './notifications';
 import { CategoryIcons } from '../constants/theme';
 
@@ -143,6 +143,9 @@ export const DEFAULT_SYSTEM_PROMPT = `你是一个日程管理和记录助手。
 ## 当前待办列表
 {{todo_list}}
 
+## 今天活动列表
+{{activity_list}}
+
 ## 工具使用规则
 
 ### 记录已做的事
@@ -179,7 +182,12 @@ export const DEFAULT_SYSTEM_PROMPT = `你是一个日程管理和记录助手。
 - 如果没有合适的分类，可以自创分类名（简洁两字词），新分类会自动保存供后续复用
 - create_todo 如果用户指定了 scheduled_time 但没有指定提前提醒时间，默认设置 reminder_advance=10（分钟）`;
 
-function buildSystemPrompt(todos: { title: string; recurring: number; last_completed: string | null; scheduled_time: string | null }[], granularity: number, categories: string[], template: string): string {
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+}
+
+function buildSystemPrompt(todos: { title: string; recurring: number; last_completed: string | null; scheduled_time: string | null }[], granularity: number, categories: string[], activities: ActivityRecord[], template: string): string {
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
@@ -194,11 +202,25 @@ function buildSystemPrompt(todos: { title: string; recurring: number; last_compl
       }).join('\n')
     : '（无待办）';
 
+  const activityList = activities.length > 0
+    ? activities.map(r => {
+        const time = `${formatTime(r.start_time)}-${r.end_time ? formatTime(r.end_time) : '现在'}`;
+        const parts = [`- ${r.activity}（${time}）`];
+        if (r.category && r.category !== '其他') parts[0] += ` [${r.category}]`;
+        if (r.details) parts.push(`  详情: ${r.details}`);
+        if (r.mood) parts.push(`  心情: ${r.mood}`);
+        if (r.social) parts.push(`  社交: ${r.social}`);
+        if (r.location) parts.push(`  地点: ${r.location}`);
+        return parts.join('\n');
+      }).join('\n')
+    : '（无活动）';
+
   return template
-    .replace('{{current_time}}', now.toISOString())
+    .replace('{{current_time}}', new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, -1))
     .replace('{{granularity}}', String(granularity))
     .replace('{{categories}}', categories.join('、'))
-    .replace('{{todo_list}}', todoList);
+    .replace('{{todo_list}}', todoList)
+    .replace('{{activity_list}}', activityList);
 }
 
 // --- Activity matching helper ---
@@ -284,7 +306,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       case 'update_activity': {
         const found = await findTodayActivity(args.activity as string, args.start_time as string | undefined);
         if (!found) return { success: false, message: `未找到活动「${args.activity as string}」` };
-        const updates: Record<string, unknown> = {};
+        const updates: { [k: string]: unknown } = {};
         for (const key of ['end_time', 'category', 'details', 'mood', 'social', 'location'] as const) {
           if (args[key] !== undefined) updates[key] = args[key];
         }
@@ -341,10 +363,11 @@ async function buildContext(): Promise<{ systemPrompt: string; url: string; apiK
   const customCategories = await getCustomCategories();
   const categories = [...defaultCategories, ...customCategories.filter(c => !defaultCategories.includes(c))];
   const todos = await getAllTodos();
+  const activities = await getTodayRecords();
   const customPrompt = await getSystemPrompt();
 
   return {
-    systemPrompt: buildSystemPrompt(todos, granularity, categories, customPrompt || DEFAULT_SYSTEM_PROMPT),
+    systemPrompt: buildSystemPrompt(todos, granularity, categories, activities, customPrompt || DEFAULT_SYSTEM_PROMPT),
     url: settings.apiUrl.replace(/\/$/, '') + '/chat/completions',
     apiKey: settings.apiKey,
     model: settings.model,
@@ -517,9 +540,10 @@ export async function runAgent(userText: string): Promise<AgentResult> {
   const customCategories = await getCustomCategories();
   const categories = [...defaultCategories, ...customCategories.filter(c => !defaultCategories.includes(c))];
   const todos = await getAllTodos();
+  const activities = await getTodayRecords();
   const customPrompt = await getSystemPrompt();
 
-  const systemPrompt = buildSystemPrompt(todos, granularity, categories, customPrompt || DEFAULT_SYSTEM_PROMPT);
+  const systemPrompt = buildSystemPrompt(todos, granularity, categories, activities, customPrompt || DEFAULT_SYSTEM_PROMPT);
 
   interface Message {
     role: 'system' | 'user' | 'assistant' | 'tool';
