@@ -14,8 +14,10 @@ function generateId(): string {
 }
 
 let db: SQLite.SQLiteDatabase | null = null;
+let dbReady: Promise<SQLite.SQLiteDatabase> | null = null;
 
 export async function getDB(): Promise<SQLite.SQLiteDatabase> {
+  if (dbReady) return dbReady;
   if (db) {
     try {
       await db.getFirstAsync('SELECT 1');
@@ -24,9 +26,14 @@ export async function getDB(): Promise<SQLite.SQLiteDatabase> {
       db = null;
     }
   }
-  db = await SQLite.openDatabaseAsync(DB_NAME);
-  await initDB(db);
-  return db;
+  dbReady = (async () => {
+    const database = await SQLite.openDatabaseAsync(DB_NAME);
+    await initDB(database);
+    db = database;
+    dbReady = null;
+    return database;
+  })();
+  return dbReady;
 }
 
 async function initDB(database: SQLite.SQLiteDatabase): Promise<void> {

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, LayoutAnimation, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, S, R, F, CategoryIcons, CategoryColors } from '../constants/theme';
 import { Record, deleteRecord } from '../lib/db';
@@ -16,8 +17,8 @@ function fmtTime(iso: string): string {
 }
 
 export default function ActivityBlock({ record, onChanged }: Props) {
-  const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const swipeRef = React.useRef<Swipeable>(null);
 
   const iconName = CategoryIcons[record.category] || 'ellipse-outline';
   const bgColor = CategoryColors[record.category] || CategoryColors['其他'];
@@ -25,12 +26,8 @@ export default function ActivityBlock({ record, onChanged }: Props) {
     ? `${fmtTime(record.start_time)} – ${fmtTime(record.end_time)}`
     : `${fmtTime(record.start_time)} – 现在`;
 
-  const toggle = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setOpen(!open);
-  };
-
   const handleDelete = () => {
+    swipeRef.current?.close();
     Alert.alert('删除活动', `确定删除「${record.activity}」？`, [
       { text: '取消', style: 'cancel' },
       { text: '删除', style: 'destructive', onPress: async () => {
@@ -40,40 +37,46 @@ export default function ActivityBlock({ record, onChanged }: Props) {
     ]);
   };
 
+  const handleEdit = () => {
+    swipeRef.current?.close();
+    setEditing(true);
+  };
+
+  const renderRightActions = () => (
+    <View style={s.swipeActions}>
+      <TouchableOpacity style={s.swipeEditBtn} onPress={handleEdit}>
+        <Ionicons name="create-outline" size={20} color="#fff" />
+        <Text style={s.swipeBtnText}>编辑</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={s.swipeDelBtn} onPress={handleDelete}>
+        <Ionicons name="trash-outline" size={20} color="#fff" />
+        <Text style={s.swipeBtnText}>删除</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   return (
     <>
-      <TouchableOpacity style={[s.block, { backgroundColor: bgColor }]} onPress={toggle} activeOpacity={0.7}>
-        <View style={s.top}>
-          <View style={s.iconWrap}>
-            <Ionicons name={iconName as any} size={18} color={Colors.text} />
+      <Swipeable ref={swipeRef} renderRightActions={renderRightActions} overshootRight={false} friction={2}>
+        <View style={[s.block, { backgroundColor: bgColor }]}>
+          <View style={s.top}>
+            <View style={s.iconWrap}>
+              <Ionicons name={iconName as any} size={18} color={Colors.text} />
+            </View>
+            <View style={s.info}>
+              <Text style={s.name}>{record.activity}</Text>
+              <Text style={s.timeRange}>{timeRange}</Text>
+            </View>
+            {record.location ? <Text style={s.loc}>{record.location}</Text> : null}
           </View>
-          <View style={s.info}>
-            <Text style={s.name}>{record.activity}</Text>
-            <Text style={s.timeRange}>{timeRange}</Text>
-          </View>
-          {record.location ? <Text style={s.loc}>{record.location}</Text> : null}
-        </View>
-        {open && (
           <View style={s.detail}>
             {record.details ? <Text style={s.detailText}>{record.details}</Text> : null}
-            {record.mood ? <Text style={s.detailMeta}>感受：{record.mood}</Text> : null}
-            {record.social ? <Text style={s.detailMeta}>和谁：{record.social}</Text> : null}
-            {record.location ? <Text style={s.detailMeta}>在哪：{record.location}</Text> : null}
-            <Text style={s.rawText}>{record.raw_text}</Text>
-            <View style={s.actions}>
-              <TouchableOpacity style={s.editBtn} onPress={() => setEditing(true)}>
-                <Text style={s.editText}>编辑</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={s.delBtn} onPress={handleDelete}>
-                <Text style={s.delText}>删除</Text>
-              </TouchableOpacity>
-            </View>
           </View>
-        )}
-        <View style={s.catWrap}>
-          <Text style={s.cat}>{record.category}</Text>
+          <View style={s.catWrap}>
+            <Text style={s.cat}>{record.category}</Text>
+          </View>
         </View>
-      </TouchableOpacity>
+      </Swipeable>
       <EditRecordModal
         record={record}
         visible={editing}
@@ -114,29 +117,34 @@ const s = StyleSheet.create({
     borderTopColor: Colors.divider,
   },
   detailText: { fontSize: F.sm, color: Colors.text, lineHeight: 20 },
-  detailMeta: { fontSize: F.sm, color: Colors.subtext, marginTop: S.xs },
-  rawText: { fontSize: F.xs, color: Colors.hint, fontStyle: 'italic', marginTop: S.sm },
-  actions: {
+  swipeActions: {
     flexDirection: 'row',
-    gap: S.sm,
-    marginTop: S.md,
+    alignItems: 'center',
+    paddingLeft: S.sm,
   },
-  editBtn: {
-    paddingHorizontal: S.md,
-    paddingVertical: S.sm,
-    borderRadius: R.sm,
-    borderWidth: 1,
-    borderColor: Colors.primary,
+  swipeEditBtn: {
+    width: 64,
+    height: 64,
+    borderRadius: R.md,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: S.sm,
   },
-  editText: { fontSize: F.sm, color: Colors.primary, fontWeight: '600' },
-  delBtn: {
-    paddingHorizontal: S.md,
-    paddingVertical: S.sm,
-    borderRadius: R.sm,
-    borderWidth: 1,
-    borderColor: '#FF3B30',
+  swipeDelBtn: {
+    width: 64,
+    height: 64,
+    borderRadius: R.md,
+    backgroundColor: '#FF3B30',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  delText: { fontSize: F.sm, color: '#FF3B30', fontWeight: '600' },
+  swipeBtnText: {
+    fontSize: 10,
+    color: '#fff',
+    fontWeight: '600',
+    marginTop: 2,
+  },
   catWrap: {
     alignSelf: 'flex-start',
     marginTop: S.sm,
