@@ -20,3 +20,11 @@ export async function resetReminderAfterRecord(): Promise<void> {
 export async function setupNotificationListener(_onPress?: () => void): Promise<() => void> {
   return () => {};
 }
+
+export async function scheduleTodoReminder(_todoId: string, _title: string, _scheduledTime: string): Promise<void> {
+  // No-op in Expo Go
+}
+
+export async function cancelTodoReminder(_todoId: string): Promise<void> {
+  // No-op in Expo Go
+}

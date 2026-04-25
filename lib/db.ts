@@ -58,6 +58,26 @@ async function initDB(database: SQLite.SQLiteDatabase): Promise<void> {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS todos (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      recurring INTEGER NOT NULL DEFAULT 0,
+      scheduled_time TEXT,
+      last_completed TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id TEXT PRIMARY KEY,
+      chat_date TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT DEFAULT '',
+      tool_calls TEXT,
+      tool_call_id TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
 }
 
@@ -153,6 +173,76 @@ export async function updateRecord(id: string, updates: Partial<Omit<Record, 'id
 
 // --- Custom Categories ---
 
+// --- Todos ---
+
+export interface Todo {
+  id: string;
+  title: string;
+  recurring: number;
+  scheduled_time: string | null;
+  last_completed: string | null;
+  sort_order: number;
+  created_at: string;
+}
+
+function todayStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export async function getAllTodos(): Promise<Todo[]> {
+  const database = await getDB();
+  return database.getAllAsync<Todo>('SELECT * FROM todos ORDER BY sort_order, created_at');
+}
+
+export async function getTodayTodos(): Promise<Todo[]> {
+  const all = await getAllTodos();
+  const today = todayStr();
+  return all.map(t => ({
+    ...t,
+    // recurring: completed only if last_completed === today
+    // one-time: completed if last_completed is set
+    last_completed: t.recurring
+      ? (t.last_completed === today ? t.last_completed : null)
+      : t.last_completed,
+  }));
+}
+
+export async function addTodo(title: string, recurring: boolean = false, scheduled_time?: string): Promise<string> {
+  const database = await getDB();
+  const id = generateId();
+  await database.runAsync(
+    'INSERT INTO todos (id, title, recurring, scheduled_time, last_completed, sort_order, created_at) VALUES (?, ?, ?, ?, NULL, 0, ?)',
+    [id, title, recurring ? 1 : 0, scheduled_time ?? null, new Date().toISOString()]
+  );
+  return id;
+}
+
+export async function completeTodo(id: string): Promise<void> {
+  const database = await getDB();
+  await database.runAsync('UPDATE todos SET last_completed = ? WHERE id = ?', [todayStr(), id]);
+}
+
+export async function uncompleteTodo(id: string): Promise<void> {
+  const database = await getDB();
+  await database.runAsync('UPDATE todos SET last_completed = NULL WHERE id = ?', [id]);
+}
+
+export async function deleteTodo(id: string): Promise<void> {
+  const database = await getDB();
+  await database.runAsync('DELETE FROM todos WHERE id = ?', [id]);
+}
+
+export async function findTodoByTitle(title: string): Promise<Todo | null> {
+  const database = await getDB();
+  const all = await database.getAllAsync<Todo>('SELECT * FROM todos');
+  const lower = title.toLowerCase();
+  // Exact match first, then substring match
+  return all.find(t => t.title.toLowerCase() === lower)
+    ?? all.find(t => t.title.toLowerCase().includes(lower) || lower.includes(t.title.toLowerCase()))
+    ?? null;
+}
+
 export async function getCustomCategories(): Promise<string[]> {
   const val = await getSetting('custom_categories');
   return val ? JSON.parse(val) : [];
@@ -223,6 +313,60 @@ export async function setGranularity(minutes: number): Promise<void> {
   await setSetting('granularity', String(minutes));
 }
 
+export async function getTodoReminderAdvance(): Promise<number> {
+  const val = await getSetting('todo_reminder_advance');
+  return val ? parseInt(val, 10) : 5;
+}
+
+export async function setTodoReminderAdvance(minutes: number): Promise<void> {
+  await setSetting('todo_reminder_advance', String(minutes));
+}
+
+// --- Chat Messages ---
+
+export interface ChatMessage {
+  id: string;
+  chat_date: string;
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_calls: string | null;  // JSON
+  tool_call_id: string | null;
+  created_at: string;
+}
+
+export function getChatDate(): string {
+  const now = new Date();
+  if (now.getHours() < 6) {
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    return `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+  }
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+export async function getChatMessages(chatDate: string): Promise<ChatMessage[]> {
+  const database = await getDB();
+  return database.getAllAsync<ChatMessage>(
+    'SELECT * FROM chat_messages WHERE chat_date = ? ORDER BY created_at ASC',
+    [chatDate]
+  );
+}
+
+export async function addChatMessage(msg: { chat_date: string; role: 'user' | 'assistant' | 'tool'; content?: string; tool_calls?: string | null; tool_call_id?: string | null }): Promise<string> {
+  const database = await getDB();
+  const id = generateId();
+  await database.runAsync(
+    'INSERT INTO chat_messages (id, chat_date, role, content, tool_calls, tool_call_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [id, msg.chat_date, msg.role, msg.content || '', msg.tool_calls ?? null, msg.tool_call_id ?? null, new Date().toISOString()]
+  );
+  return id;
+}
+
+export async function clearChatMessages(chatDate: string): Promise<void> {
+  const database = await getDB();
+  await database.runAsync('DELETE FROM chat_messages WHERE chat_date = ?', [chatDate]);
+}
+
 // --- Import / Export ---
 
 export async function exportAllRecords(): Promise<string> {
@@ -230,7 +374,10 @@ export async function exportAllRecords(): Promise<string> {
   const records = await database.getAllAsync<Record>(
     'SELECT * FROM records ORDER BY start_time ASC'
   );
-  return JSON.stringify({ version: 1, records }, null, 2);
+  const todos = await database.getAllAsync<Todo>(
+    'SELECT * FROM todos ORDER BY sort_order, created_at'
+  );
+  return JSON.stringify({ version: 2, records, todos }, null, 2);
 }
 
 export async function importRecords(json: string): Promise<number> {
@@ -249,6 +396,18 @@ export async function importRecords(json: string): Promise<number> {
        r.activity ?? '', r.category ?? '其他', r.details ?? '', r.mood ?? '', r.social ?? '', r.location ?? '']
     );
     count++;
+  }
+  // Import todos if present (v2 format)
+  if (data.todos && Array.isArray(data.todos)) {
+    for (const t of data.todos) {
+      const id = t.id || generateId();
+      await database.runAsync(
+        `INSERT OR REPLACE INTO todos (id, title, recurring, scheduled_time, last_completed, sort_order, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [id, t.title, t.recurring ?? 0, t.scheduled_time ?? null, t.last_completed ?? null, t.sort_order ?? 0, t.created_at ?? new Date().toISOString()]
+      );
+      count++;
+    }
   }
   return count;
 }

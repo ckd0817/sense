@@ -51,7 +51,7 @@ const s = StyleSheet.create({
     height: 80,
     paddingBottom: 28,
     paddingTop: 8,
-    alignItems: 'flex-end',
+    alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 40,
   },
@@ -68,13 +68,13 @@ const s = StyleSheet.create({
     color: Colors.primary,
   },
   centerBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: Colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 4,
     ...Platform.select({
       ios: {
         shadowColor: Colors.primary,

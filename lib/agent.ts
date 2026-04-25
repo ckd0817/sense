@@ -1,0 +1,473 @@
+import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, completeTodo, findTodoByTitle, insertActivity } from './db';
+import { scheduleTodoReminder, cancelTodoReminder } from './notifications';
+import { CategoryIcons } from '../constants/theme';
+
+// --- Tool Definitions (OpenAI function calling format) ---
+
+const tools = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'create_activity',
+      description: '记录一个活动（已发生或正在进行的事情）',
+      parameters: {
+        type: 'object',
+        properties: {
+          activity: { type: 'string', description: '活动名称（简短，如"午餐"、"上课"）' },
+          category: { type: 'string', description: '活动分类' },
+          start_time: { type: 'string', description: '开始时间，ISO 8601 格式' },
+          end_time: { type: 'string', description: '结束时间，ISO 8601 格式，可为空' },
+          details: { type: 'string', description: '活动细节' },
+          mood: { type: 'string', description: '情绪感受' },
+          social: { type: 'string', description: '和谁在一起' },
+          location: { type: 'string', description: '在哪里' },
+        },
+        required: ['activity', 'start_time'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'create_todo',
+      description: '创建一个待办事项。可以是每日重复的习惯，也可以是一次性的临时待办。如果有计划时间，可以指定 scheduled_time。',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: '待办标题' },
+          recurring: { type: 'boolean', description: '是否每日重复（习惯），默认 false' },
+          scheduled_time: { type: 'string', description: '计划时间，ISO 8601 格式，可选' },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'complete_todo',
+      description: '标记一个待办事项为已完成。会根据标题模糊匹配已有的待办。',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: '待办标题（模糊匹配）' },
+        },
+        required: ['title'],
+      },
+    },
+  },
+];
+
+// --- Types ---
+
+interface ToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+export interface ActionLog {
+  tool: string;
+  args: Record<string, unknown>;
+  result: { success: boolean; message?: string; id?: string };
+}
+
+export interface AgentResult {
+  summary: string;
+  actions: ActionLog[];
+}
+
+// --- System Prompt ---
+
+function buildSystemPrompt(todos: { title: string; recurring: number; last_completed: string | null; scheduled_time: string | null }[], granularity: number, categories: string[]): string {
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  const todoList = todos.length > 0
+    ? todos.map(t => {
+        const done = t.recurring
+          ? t.last_completed === today
+          : !!t.last_completed;
+        const type = t.recurring ? '每日习惯' : '临时待办';
+        const time = t.scheduled_time ? `，计划时间: ${t.scheduled_time}` : '';
+        return `- ${t.title}（${type}${time}）${done ? '✓ 已完成' : '○ 未完成'}`;
+      }).join('\n')
+    : '（无待办）';
+
+  return `你是一个日程管理和记录助手。用户用自然语言描述他们的活动、计划和习惯，你通过调用工具来帮助他们管理。
+
+当前时间：${now.toISOString()}
+时间粒度：${granularity}分钟。所有 start_time 和 end_time 的分钟部分必须对齐到该粒度（向下取整 start_time，向上取整 end_time）。
+可用分类：${categories.join('、')}
+
+## 当前待办列表
+${todoList}
+
+## 工具使用规则
+
+### 记录已做的事
+用户描述已经发生或正在进行的事情 → 调用 create_activity。
+如果该活动恰好匹配某个未完成的待办 → 同时调用 complete_todo。
+
+### 创建待办
+用户描述未来的计划 → 调用 create_todo。
+- "我要养成每天X的习惯" → create_todo(title="X", recurring=true)
+- "X点要去做Y" → create_todo(title="Y", scheduled_time="...")
+- "记得做X" → create_todo(title="X")
+
+### 完成待办
+用户说某事做完了，且该事在待办列表中 → 调用 complete_todo。
+
+### 注意
+- 一条消息可能需要调用多个工具
+- 时间推算：根据当前时间和用户的相对描述推算具体时间
+- 只提取用户明确提到的信息，不要编造
+- 对于 create_activity 的 category，优先从可用分类中选择`;
+}
+
+// --- Tool Executor ---
+
+async function executeTool(name: string, args: Record<string, unknown>): Promise<{ success: boolean; message?: string; id?: string }> {
+  try {
+    switch (name) {
+      case 'create_activity': {
+        const now = new Date().toISOString();
+        const id = await insertActivity({
+          created_at: now,
+          start_time: args.start_time as string,
+          end_time: (args.end_time as string) || null,
+          raw_text: '',
+          activity: args.activity as string,
+          category: (args.category as string) || '其他',
+          details: (args.details as string) || '',
+          mood: (args.mood as string) || '',
+          social: (args.social as string) || '',
+          location: (args.location as string) || '',
+        });
+        // Save new category if needed
+        if (args.category) {
+          const defaultCategories = Object.keys(CategoryIcons);
+          const custom = await getCustomCategories();
+          const all = [...defaultCategories, ...custom];
+          if (!all.includes(args.category as string)) {
+            await addCustomCategory(args.category as string);
+          }
+        }
+        return { success: true, id };
+      }
+      case 'create_todo': {
+        const id = await addTodo(
+          args.title as string,
+          (args.recurring as boolean) || false,
+          (args.scheduled_time as string) || undefined,
+        );
+        if (args.scheduled_time) {
+          await scheduleTodoReminder(id, args.title as string, args.scheduled_time as string);
+        }
+        return { success: true, id };
+      }
+      case 'complete_todo': {
+        const todo = await findTodoByTitle(args.title as string);
+        if (todo) {
+          if (todo.last_completed) {
+            return { success: true, message: '已经是完成状态' };
+          }
+          await completeTodo(todo.id);
+          await cancelTodoReminder(todo.id);
+          return { success: true };
+        }
+        return { success: false, message: `未找到待办「${args.title as string}」` };
+      }
+      default:
+        return { success: false, message: `未知工具: ${name}` };
+    }
+  } catch (e) {
+    return { success: false, message: e instanceof Error ? e.message : '执行失败' };
+  }
+}
+
+// --- Stream Types ---
+
+export type StreamEvent =
+  | { type: 'text_delta'; content: string }
+  | { type: 'tool_call'; name: string; args: Record<string, unknown> }
+  | { type: 'tool_result'; name: string; result: { success: boolean; message?: string } }
+  | { type: 'done' };
+
+export interface AgentMessage {
+  role: 'user' | 'assistant' | 'tool';
+  content?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+// --- Build context ---
+
+async function buildContext(): Promise<{ systemPrompt: string; url: string; apiKey: string; model: string }> {
+  const settings = await getAISettings();
+  if (!settings.apiUrl || !settings.apiKey) throw new Error('请先在设置中配置 AI API');
+
+  const granularity = await getGranularity();
+  const defaultCategories = Object.keys(CategoryIcons);
+  const customCategories = await getCustomCategories();
+  const categories = [...defaultCategories, ...customCategories.filter(c => !defaultCategories.includes(c))];
+  const todos = await getAllTodos();
+
+  return {
+    systemPrompt: buildSystemPrompt(todos, granularity, categories),
+    url: settings.apiUrl.replace(/\/$/, '') + '/chat/completions',
+    apiKey: settings.apiKey,
+    model: settings.model,
+  };
+}
+
+// --- SSE Reader via XMLHttpRequest (reliable in React Native) ---
+
+async function* readSSERaw(url: string, headers: Record<string, string>, body: string): AsyncGenerator<string> {
+  const xhr = new XMLHttpRequest();
+  let resolve: ((v: void) => void) | null = null;
+  let finished = false;
+  let lastIndex = 0;
+  let error: string | null = null;
+
+  xhr.open('POST', url, true);
+  for (const [k, v] of Object.entries(headers)) {
+    xhr.setRequestHeader(k, v);
+  }
+
+  xhr.onreadystatechange = () => {
+    if (xhr.readyState === 4 && xhr.status >= 400) {
+      error = `AI API 请求失败 (${xhr.status}): ${xhr.responseText?.slice(0, 200)}`;
+      finished = true;
+      if (resolve) { resolve(); resolve = null; }
+    }
+  };
+
+  xhr.onprogress = () => {
+    if (resolve) { resolve(); resolve = null; }
+  };
+
+  xhr.onload = () => {
+    finished = true;
+    if (resolve) { resolve(); resolve = null; }
+  };
+
+  xhr.onerror = () => {
+    error = '网络请求失败';
+    finished = true;
+    if (resolve) { resolve(); resolve = null; }
+  };
+
+  xhr.send(body);
+
+  while (!finished || lastIndex < xhr.responseText.length) {
+    const newText = xhr.responseText.slice(lastIndex);
+    lastIndex = xhr.responseText.length;
+    if (newText) yield newText;
+    if (!finished && lastIndex >= xhr.responseText.length) {
+      await new Promise<void>(r => { resolve = r; });
+    }
+  }
+
+  if (error) throw new Error(error);
+}
+
+function parseSSEChunks(raw: string, prevBuffer: string): { events: string[]; buffer: string } {
+  const combined = prevBuffer + raw;
+  const parts = combined.split('\n');
+  const buffer = parts.pop() || '';
+  const events: string[] = [];
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith('data: ')) {
+      const data = trimmed.slice(6);
+      if (data !== '[DONE]') events.push(data);
+    }
+  }
+  return { events, buffer };
+}
+
+// --- Streaming Agent ---
+
+export async function* streamAgent(history: AgentMessage[]): AsyncGenerator<StreamEvent> {
+  const { systemPrompt, url, apiKey, model } = await buildContext();
+
+  const messages = [
+    { role: 'system' as const, content: systemPrompt },
+    ...history,
+  ];
+
+  const MAX_ROUNDS = 5;
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    let fullContent = '';
+    const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
+    let sseBuffer = '';
+
+    for await (const chunk of readSSERaw(
+      url,
+      { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      JSON.stringify({ model, messages, temperature: 0.3, tools, stream: true }),
+    )) {
+      const { events, buffer } = parseSSEChunks(chunk, sseBuffer);
+      sseBuffer = buffer;
+
+      for (const data of events) {
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed.choices?.[0]?.delta;
+          if (!delta) continue;
+
+          if (delta.content) {
+            fullContent += delta.content;
+            yield { type: 'text_delta', content: delta.content };
+          }
+
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0;
+              if (!toolCallMap.has(idx)) {
+                toolCallMap.set(idx, { id: tc.id || '', name: tc.function?.name || '', arguments: '' });
+              }
+              const entry = toolCallMap.get(idx)!;
+              if (tc.id) entry.id = tc.id;
+              if (tc.function?.name) entry.name = tc.function.name;
+              if (tc.function?.arguments) entry.arguments += tc.function.arguments;
+            }
+          }
+        } catch { /* skip malformed JSON */ }
+      }
+    }
+
+    // No tool calls → done
+    if (toolCallMap.size === 0) {
+      messages.push({ role: 'assistant', content: fullContent });
+      yield { type: 'done' };
+      return;
+    }
+
+    // Build assistant message with tool_calls
+    const assistantMsg: AgentMessage = {
+      role: 'assistant',
+      content: fullContent || undefined,
+      tool_calls: Array.from(toolCallMap.values()).map(tc => ({
+        id: tc.id,
+        type: 'function' as const,
+        function: { name: tc.name, arguments: tc.arguments },
+      })),
+    };
+    messages.push(assistantMsg);
+
+    // Execute tool calls
+    for (const tc of toolCallMap.values()) {
+      let args: Record<string, unknown>;
+      try { args = JSON.parse(tc.arguments); } catch { args = {}; }
+
+      yield { type: 'tool_call', name: tc.name, args };
+      const result = await executeTool(tc.name, args);
+      yield { type: 'tool_result', name: tc.name, result };
+
+      messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) });
+    }
+  }
+
+  yield { type: 'done' };
+}
+
+// --- Non-streaming Agent (fallback) ---
+
+export async function runAgent(userText: string): Promise<AgentResult> {
+  const settings = await getAISettings();
+  if (!settings.apiUrl || !settings.apiKey) {
+    throw new Error('请先在设置中配置 AI API');
+  }
+
+  const granularity = await getGranularity();
+  const defaultCategories = Object.keys(CategoryIcons);
+  const customCategories = await getCustomCategories();
+  const categories = [...defaultCategories, ...customCategories.filter(c => !defaultCategories.includes(c))];
+  const todos = await getAllTodos();
+
+  const systemPrompt = buildSystemPrompt(todos, granularity, categories);
+
+  interface Message {
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    content?: string;
+    tool_calls?: ToolCall[];
+    tool_call_id?: string;
+  }
+
+  const messages: Message[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userText },
+  ];
+
+  const actions: ActionLog[] = [];
+  const MAX_ROUNDS = 5;
+
+  const url = settings.apiUrl.replace(/\/$/, '') + '/chat/completions';
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const body: Record<string, unknown> = {
+      model: settings.model,
+      messages,
+      temperature: 0.3,
+      tools,
+    };
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`AI API 请求失败 (${response.status}): ${errorText.slice(0, 200)}`);
+    }
+
+    const data = await response.json();
+    const choice = data.choices?.[0];
+    if (!choice) throw new Error('AI 返回了空结果');
+
+    const assistantMsg = choice.message;
+    messages.push(assistantMsg);
+
+    const toolCalls: ToolCall[] = assistantMsg.tool_calls || [];
+
+    if (toolCalls.length === 0) {
+      // No more tool calls — agent is done
+      return {
+        summary: assistantMsg.content || '处理完成',
+        actions,
+      };
+    }
+
+    // Execute tool calls
+    for (const tc of toolCalls) {
+      let args: Record<string, unknown>;
+      try {
+        args = JSON.parse(tc.function.arguments);
+      } catch {
+        args = {};
+      }
+
+      const result = await executeTool(tc.function.name, args);
+      actions.push({ tool: tc.function.name, args, result });
+
+      messages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: JSON.stringify(result),
+      });
+    }
+  }
+
+  return {
+    summary: '处理完成（已达到最大轮次）',
+    actions,
+  };
+}

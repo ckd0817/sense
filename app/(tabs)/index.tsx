@@ -3,10 +3,11 @@ import { View, Text, FlatList, StyleSheet, RefreshControl, LayoutAnimation, Touc
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
-import { getTodayRecords, getGranularity, Record } from '../../lib/db';
+import { getTodayRecords, getGranularity, getTodayTodos, Record, Todo } from '../../lib/db';
 import { Colors, S, R, F } from '../../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 import ActivityBlock from '../../components/ActivityBlock';
+import TodoSection from '../../components/TodoSection';
 import WeekSchedule from '../../components/WeekSchedule';
 
 function dateStr(d: Date): string {
@@ -25,12 +26,17 @@ function getMonday(d: Date): Date {
 export default function TodayScreen() {
   const [mode, setMode] = useState<'today' | 'history'>('today');
   const [records, setRecords] = useState<Record[]>([]);
+  const [todos, setTodos] = useState<Todo[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0);
   const [granularity, setGran] = useState(30);
   const pinchScale = useRef(1);
 
-  const loadToday = useCallback(async () => { setRecords(await getTodayRecords()); }, []);
+  const loadToday = useCallback(async () => {
+    const [r, t] = await Promise.all([getTodayRecords(), getTodayTodos()]);
+    setRecords(r);
+    setTodos(t);
+  }, []);
 
   useFocusEffect(useCallback(() => {
     if (mode === 'today') loadToday();
@@ -85,6 +91,8 @@ export default function TodayScreen() {
                 <Ionicons name="calendar-outline" size={22} color={Colors.primary} />
               </TouchableOpacity>
             </View>
+
+            <TodoSection todos={todos} onChanged={loadToday} />
 
             {records.length === 0 ? (
               <View style={s.empty}>

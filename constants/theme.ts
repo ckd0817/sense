@@ -96,3 +96,11 @@ export const GRANULARITY_OPTIONS = [
   { label: '30分钟', value: 30 },
   { label: '1小时', value: 60 },
 ];
+
+export const TODO_REMINDER_OPTIONS = [
+  { label: '1 分钟', value: 1 },
+  { label: '5 分钟', value: 5 },
+  { label: '10 分钟', value: 10 },
+  { label: '15 分钟', value: 15 },
+  { label: '30 分钟', value: 30 },
+];
