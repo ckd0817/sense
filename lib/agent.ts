@@ -1,6 +1,7 @@
 import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, completeTodo, uncompleteTodo, findTodoByTitle, insertActivity, getTodayRecords, updateRecord, deleteRecord, getSystemPrompt, Record as ActivityRecord } from './db';
 import { scheduleTodoReminder, cancelTodoReminder } from './notifications';
 import { CategoryIcons } from '../constants/theme';
+import { toLocalISO } from './time';
 
 // --- Tool Definitions (OpenAI function calling format) ---
 
@@ -15,8 +16,8 @@ const tools = [
         properties: {
           activity: { type: 'string', description: '活动名称（简短，如"午餐"、"上课"）' },
           category: { type: 'string', description: '活动分类' },
-          start_time: { type: 'string', description: '开始时间，ISO 8601 格式' },
-          end_time: { type: 'string', description: '结束时间，ISO 8601 格式，可为空' },
+          start_time: { type: 'string', description: '开始时间，格式如 2026-04-25T17:30:00，不要带时区和Z' },
+          end_time: { type: 'string', description: '结束时间，格式如 2026-04-25T18:00:00，不要带时区和Z，可为空' },
           details: { type: 'string', description: '活动细节' },
           mood: { type: 'string', description: '情绪感受' },
           social: { type: 'string', description: '和谁在一起' },
@@ -36,7 +37,7 @@ const tools = [
         properties: {
           title: { type: 'string', description: '待办标题' },
           recurring: { type: 'boolean', description: '是否每日重复（习惯），默认 false' },
-          scheduled_time: { type: 'string', description: '计划时间，ISO 8601 格式，可选' },
+          scheduled_time: { type: 'string', description: '计划时间，格式如 2026-04-25T17:30:00，不要带时区和Z，可选' },
           reminder_advance: { type: 'number', description: '提前多少分钟提醒，可选。默认 10 分钟' },
         },
         required: ['title'],
@@ -54,7 +55,7 @@ const tools = [
           title: { type: 'string', description: '待办标题（模糊匹配）' },
           completed: { type: 'boolean', description: '是否标记为已完成' },
           new_title: { type: 'string', description: '修改后的新标题，可选' },
-          scheduled_time: { type: 'string', description: '新的计划时间，ISO 8601 格式，可选' },
+          scheduled_time: { type: 'string', description: '新的计划时间，格式如 2026-04-25T17:30:00，不要带时区和Z，可选' },
           reminder_advance: { type: 'number', description: '新的提前提醒分钟数，可选' },
         },
         required: ['title'],
@@ -84,8 +85,8 @@ const tools = [
         type: 'object',
         properties: {
           activity: { type: 'string', description: '活动名称（模糊匹配）' },
-          start_time: { type: 'string', description: '限定匹配的开始时间范围，ISO 8601 格式，可选' },
-          end_time: { type: 'string', description: '新的结束时间，ISO 8601 格式' },
+          start_time: { type: 'string', description: '限定匹配的开始时间范围，不要带时区和Z，可选' },
+          end_time: { type: 'string', description: '新的结束时间，格式如 2026-04-25T18:00:00，不要带时区和Z' },
           category: { type: 'string', description: '新的分类' },
           details: { type: 'string', description: '新的活动细节' },
           mood: { type: 'string', description: '新的情绪感受' },
@@ -105,7 +106,7 @@ const tools = [
         type: 'object',
         properties: {
           activity: { type: 'string', description: '活动名称（模糊匹配）' },
-          start_time: { type: 'string', description: '限定匹配的开始时间范围，ISO 8601 格式，可选' },
+          start_time: { type: 'string', description: '限定匹配的开始时间范围，不要带时区和Z，可选' },
         },
         required: ['activity'],
       },
@@ -216,7 +217,7 @@ function buildSystemPrompt(todos: { title: string; recurring: number; last_compl
     : '（无活动）';
 
   return template
-    .replace('{{current_time}}', new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, -1))
+    .replace('{{current_time}}', toLocalISO(now))
     .replace('{{granularity}}', String(granularity))
     .replace('{{categories}}', categories.join('、'))
     .replace('{{todo_list}}', todoList)
@@ -242,7 +243,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   try {
     switch (name) {
       case 'create_activity': {
-        const now = new Date().toISOString();
+        const now = toLocalISO(new Date());
         const id = await insertActivity({
           created_at: now,
           start_time: args.start_time as string,

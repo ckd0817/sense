@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { toLocalISO } from './time';
 
 const DB_NAME = 'sense.db';
 
@@ -113,8 +114,8 @@ export async function insertActivity(record: Omit<Record, 'id'>): Promise<string
 export async function getRecordsByDate(date: string): Promise<Record[]> {
   const database = await getDB();
   const [y, m, d] = date.split('-').map(Number);
-  const start = new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
-  const end = new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+  const start = toLocalISO(new Date(y, m - 1, d, 0, 0, 0, 0));
+  const end = toLocalISO(new Date(y, m - 1, d, 23, 59, 59, 999));
   const records = await database.getAllAsync<Record>(
     'SELECT * FROM records WHERE start_time >= ? AND start_time <= ?',
     [start, end]
@@ -146,8 +147,8 @@ export async function getRecordsByDateRange(startDate: string, endDate: string):
   const database = await getDB();
   const [y1, m1, d1] = startDate.split('-').map(Number);
   const [y2, m2, d2] = endDate.split('-').map(Number);
-  const start = new Date(y1, m1 - 1, d1, 0, 0, 0, 0).toISOString();
-  const end = new Date(y2, m2 - 1, d2, 23, 59, 59, 999).toISOString();
+  const start = toLocalISO(new Date(y1, m1 - 1, d1, 0, 0, 0, 0));
+  const end = toLocalISO(new Date(y2, m2 - 1, d2, 23, 59, 59, 999));
   const records = await database.getAllAsync<Record>(
     'SELECT * FROM records WHERE start_time >= ? AND start_time <= ?',
     [start, end]
@@ -215,7 +216,7 @@ export async function addTodo(title: string, recurring: boolean = false, schedul
   const id = generateId();
   await database.runAsync(
     'INSERT INTO todos (id, title, recurring, scheduled_time, reminder_advance, last_completed, sort_order, created_at) VALUES (?, ?, ?, ?, ?, NULL, 0, ?)',
-    [id, title, recurring ? 1 : 0, scheduled_time ?? null, reminder_advance ?? null, new Date().toISOString()]
+    [id, title, recurring ? 1 : 0, scheduled_time ?? null, reminder_advance ?? null, toLocalISO(new Date())]
   );
   return id;
 }
@@ -369,7 +370,7 @@ export async function addChatMessage(msg: { chat_date: string; role: 'user' | 'a
   const id = generateId();
   await database.runAsync(
     'INSERT INTO chat_messages (id, chat_date, role, content, tool_calls, tool_call_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [id, msg.chat_date, msg.role, msg.content || '', msg.tool_calls ?? null, msg.tool_call_id ?? null, new Date().toISOString()]
+    [id, msg.chat_date, msg.role, msg.content || '', msg.tool_calls ?? null, msg.tool_call_id ?? null, toLocalISO(new Date())]
   );
   return id;
 }
@@ -416,7 +417,7 @@ export async function importRecords(json: string): Promise<number> {
       await database.runAsync(
         `INSERT OR REPLACE INTO todos (id, title, recurring, scheduled_time, reminder_advance, last_completed, sort_order, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, t.title, t.recurring ?? 0, t.scheduled_time ?? null, t.reminder_advance ?? null, t.last_completed ?? null, t.sort_order ?? 0, t.created_at ?? new Date().toISOString()]
+        [id, t.title, t.recurring ?? 0, t.scheduled_time ?? null, t.reminder_advance ?? null, t.last_completed ?? null, t.sort_order ?? 0, t.created_at ?? toLocalISO(new Date())]
       );
       count++;
     }

@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, LayoutAnimation }
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, S, R, F, HOUR_HEIGHT, CategoryIcons, CategoryColors } from '../constants/theme';
 import { Record, getRecordsByDateRange } from '../lib/db';
-import { snapTime } from '../lib/time';
+import { snapTime, toLocalISO } from '../lib/time';
 
 const WDS = ['一', '二', '三', '四', '五', '六', '日'];
 const START_HOUR = 6;
@@ -87,7 +87,7 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
 
   const renderBlock = (rec: Record) => {
     const snappedStart = snapTime(rec.start_time, granularity, 'floor');
-    const snappedEnd = rec.end_time ? snapTime(rec.end_time, granularity, 'ceil') : snapTime(new Date().toISOString(), granularity, 'ceil');
+    const snappedEnd = rec.end_time ? snapTime(rec.end_time, granularity, 'ceil') : snapTime(toLocalISO(new Date()), granularity, 'ceil');
 
     const start = new Date(snappedStart);
     const end = new Date(snappedEnd);
