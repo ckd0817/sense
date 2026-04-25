@@ -83,14 +83,6 @@ export const CategoryColors: Record<string, string> = {
 
 export const HOUR_HEIGHT = 60; // px per hour in timeline
 
-export const REMINDER_OPTIONS = [
-  { label: '15 分钟', value: 15 },
-  { label: '30 分钟', value: 30 },
-  { label: '1 小时', value: 60 },
-  { label: '2 小时', value: 120 },
-  { label: '3 小时', value: 180 },
-];
-
 export const GRANULARITY_OPTIONS = [
   { label: '15分钟', value: 15 },
   { label: '30分钟', value: 30 },

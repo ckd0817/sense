@@ -5,15 +5,11 @@ export function toLocalISO(d: Date): string {
 
 /**
  * Snap an ISO time string to the nearest granularity boundary.
- * - 'floor': round down (for start_time)
- * - 'ceil': round up (for end_time)
  */
-export function snapTime(iso: string, granularity: number, direction: 'floor' | 'ceil'): string {
+export function snapTime(iso: string, granularity: number): string {
   const d = new Date(iso);
   const totalMinutes = d.getHours() * 60 + d.getMinutes();
-  const snapped = direction === 'floor'
-    ? Math.floor(totalMinutes / granularity) * granularity
-    : Math.ceil(totalMinutes / granularity) * granularity;
+  const snapped = Math.round(totalMinutes / granularity) * granularity;
 
   const hours = Math.floor(snapped / 60);
   const minutes = snapped % 60;

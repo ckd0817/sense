@@ -4,14 +4,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { getAISettings, setAISettings, getReminderInterval, setReminderInterval, getGranularity, setGranularity, getSystemPrompt, setSystemPrompt, AISettings, exportAllRecords, importRecords } from '../../lib/db';
 import { testConnection } from '../../lib/ai';
 import { DEFAULT_SYSTEM_PROMPT } from '../../lib/agent';
-import { Colors, S, R, F, REMINDER_OPTIONS, GRANULARITY_OPTIONS } from '../../constants/theme';
+import { Colors, S, R, F, GRANULARITY_OPTIONS } from '../../constants/theme';
 import { Paths, File, Directory } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 
 export default function SettingsScreen() {
   const [ai, setAi] = useState<AISettings>({ apiUrl: '', apiKey: '', model: '' });
-  const [interval, setInterval_] = useState(60);
+  const [interval, setInterval_] = useState(1);
   const [gran, setGran] = useState(30);
   const [remindOn, setRemindOn] = useState(true);
   const [showKey, setShowKey] = useState(false);
@@ -84,13 +84,13 @@ export default function SettingsScreen() {
   const toggleRemind = async (on: boolean) => {
     setRemindOn(on);
     if (on) {
-      const { requestNotificationPermission, schedulePeriodicReminder } = await import('../../lib/notifications');
+      const { requestNotificationPermission, scheduleRecordReminder } = await import('../../lib/notifications');
       if (!(await requestNotificationPermission())) { Alert.alert('需要通知权限'); setRemindOn(false); return; }
-      await schedulePeriodicReminder();
+      await scheduleRecordReminder();
     } else { (await import('../../lib/notifications')).cancelReminders(); }
   };
 
-  const changeInterval = async (m: number) => { setInterval_(m); await setReminderInterval(m); if (remindOn) (await import('../../lib/notifications')).schedulePeriodicReminder(); };
+  const changeInterval = async (h: number) => { setInterval_(h); await setReminderInterval(h); if (remindOn) (await import('../../lib/notifications')).scheduleRecordReminder(); };
   const changeGran = async (m: number) => { setGran(m); await setGranularity(m); };
 
   return (
@@ -119,7 +119,6 @@ export default function SettingsScreen() {
 
         <View style={s.card}>
           <Text style={s.cardTitle}>时间粒度</Text>
-          <Text style={s.cardDesc}>活动的起止时间将按此粒度对齐</Text>
           <View style={s.chips}>
             {GRANULARITY_OPTIONS.map(o => (
               <TouchableOpacity key={o.value} style={[s.chip, gran === o.value && s.chipOn]} onPress={() => changeGran(o.value)}>
@@ -131,7 +130,6 @@ export default function SettingsScreen() {
 
         <View style={s.card}>
           <Text style={s.cardTitle}>数据管理</Text>
-          <Text style={s.cardDesc}>导出或导入活动记录（JSON 格式）</Text>
           <View style={s.btnRow}>
             <TouchableOpacity style={s.outlineBtn} onPress={handleImport}>
               <Text style={s.outlineText}>导入</Text>
@@ -144,17 +142,15 @@ export default function SettingsScreen() {
 
         <View style={s.card}>
           <View style={s.row}>
-            <Text style={s.cardTitle}>定时提醒</Text>
+            <Text style={s.cardTitle}>记录提醒</Text>
             <View style={s.spacer} />
             <Switch value={remindOn} onValueChange={toggleRemind} trackColor={{ false: Colors.divider, true: Colors.primary }} thumbColor="#FFFFFF" />
           </View>
           {remindOn && (
-            <View style={s.chips}>
-              {REMINDER_OPTIONS.map(o => (
-                <TouchableOpacity key={o.value} style={[s.chip, interval === o.value && s.chipOn]} onPress={() => changeInterval(o.value)}>
-                  <Text style={[s.chipText, interval === o.value && s.chipTextOn]}>{o.label}</Text>
-                </TouchableOpacity>
-              ))}
+            <View style={s.pickerRow}>
+              <TouchableOpacity style={s.stepBtn} onPress={() => changeInterval(Math.max(1, interval - 1))}><Text style={s.stepText}>−</Text></TouchableOpacity>
+              <Text style={s.pickerValue}>{interval} 小时</Text>
+              <TouchableOpacity style={s.stepBtn} onPress={() => changeInterval(interval + 1)}><Text style={s.stepText}>+</Text></TouchableOpacity>
             </View>
           )}
         </View>
@@ -167,7 +163,6 @@ export default function SettingsScreen() {
               <Text style={s.eyeText}>恢复默认</Text>
             </TouchableOpacity>
           </View>
-          <Text style={s.cardDesc}>自定义 Agent 的行为规则，动态数据（时间、待办等）会自动注入</Text>
           <TextInput
             style={s.promptInput}
             value={promptText}
@@ -211,6 +206,10 @@ const s = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', marginBottom: S.md },
   spacer: { flex: 1 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: S.sm },
+  pickerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: S.lg },
+  stepBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.surfaceAlt, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.divider },
+  stepText: { fontSize: F.lg, color: Colors.primary, fontWeight: '500' },
+  pickerValue: { fontSize: F.md, color: Colors.text, fontWeight: '600', minWidth: 64, textAlign: 'center' },
   chip: { paddingHorizontal: S.md, paddingVertical: S.sm, borderRadius: R.xl, backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.divider },
   chipOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   chipText: { fontSize: F.sm, color: Colors.subtext },

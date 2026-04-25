@@ -86,8 +86,8 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
   };
 
   const renderBlock = (rec: Record) => {
-    const snappedStart = snapTime(rec.start_time, granularity, 'floor');
-    const snappedEnd = rec.end_time ? snapTime(rec.end_time, granularity, 'ceil') : snapTime(toLocalISO(new Date()), granularity, 'ceil');
+    const snappedStart = snapTime(rec.start_time, granularity);
+    const snappedEnd = rec.end_time ? snapTime(rec.end_time, granularity) : snapTime(toLocalISO(new Date()), granularity);
 
     const start = new Date(snappedStart);
     const end = new Date(snappedEnd);

@@ -300,7 +300,7 @@ export async function setAISettings(settings: AISettings): Promise<void> {
 
 export async function getReminderInterval(): Promise<number> {
   const val = await getSetting('reminder_interval');
-  return val ? parseInt(val, 10) : 60;
+  return val ? parseInt(val, 10) : 1;
 }
 
 export async function setReminderInterval(minutes: number): Promise<void> {

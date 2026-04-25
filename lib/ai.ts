@@ -5,7 +5,7 @@ import { CategoryIcons } from '../constants/theme';
 const BASE_PROMPT = `你是一个日程记录助手。用户会用自然语言描述他们的活动，你需要将描述提取为结构化的 JSON 数据。
 
 当前时间：{CURRENT_TIME}
-时间粒度：{GRANULARITY}分钟。所有 start_time 和 end_time 的分钟部分必须对齐到该粒度（如粒度30分钟，则 11:37→11:30，12:55→13:00，14:15→14:30）。start_time 向下取整，end_time 向上取整。
+时间粒度：{GRANULARITY}分钟。所有时间的分钟部分四舍五入到最近的粒度边界（如粒度30分钟，则 11:37→11:30，12:55→13:00，14:15→14:30）。
 
 提取规则：
 - 从用户描述中解析出所有活动，返回 activities 数组
