@@ -225,8 +225,11 @@ export default function RecordScreen() {
 
   const toolLabel: Record<string, string> = {
     create_activity: '记录活动',
+    update_activity: '修改活动',
+    delete_activity: '删除活动',
     create_todo: '创建待办',
-    complete_todo: '完成待办',
+    update_todo: '修改待办',
+    delete_todo: '删除待办',
   };
 
   const renderItem = ({ item }: { item: Bubble }) => (

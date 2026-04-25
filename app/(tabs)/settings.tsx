@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert, Switch, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getAISettings, setAISettings, getReminderInterval, setReminderInterval, getGranularity, setGranularity, getTodoReminderAdvance, setTodoReminderAdvance, AISettings, exportAllRecords, importRecords } from '../../lib/db';
+import { getAISettings, setAISettings, getReminderInterval, setReminderInterval, getGranularity, setGranularity, getSystemPrompt, setSystemPrompt, AISettings, exportAllRecords, importRecords } from '../../lib/db';
 import { testConnection } from '../../lib/ai';
-import { Colors, S, R, F, REMINDER_OPTIONS, GRANULARITY_OPTIONS, TODO_REMINDER_OPTIONS } from '../../constants/theme';
+import { DEFAULT_SYSTEM_PROMPT } from '../../lib/agent';
+import { Colors, S, R, F, REMINDER_OPTIONS, GRANULARITY_OPTIONS } from '../../constants/theme';
 import { Paths, File, Directory } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
@@ -13,13 +14,13 @@ export default function SettingsScreen() {
   const [interval, setInterval_] = useState(60);
   const [gran, setGran] = useState(30);
   const [remindOn, setRemindOn] = useState(true);
-  const [todoAdvance, setTodoAdvance] = useState(5);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [promptText, setPromptText] = useState(DEFAULT_SYSTEM_PROMPT);
 
-  useEffect(() => { (async () => { setAi(await getAISettings()); setInterval_(await getReminderInterval()); setGran(await getGranularity()); setTodoAdvance(await getTodoReminderAdvance()); })(); }, []);
+  useEffect(() => { (async () => { setAi(await getAISettings()); setInterval_(await getReminderInterval()); setGran(await getGranularity()); const sp = await getSystemPrompt(); setPromptText(sp || DEFAULT_SYSTEM_PROMPT); })(); }, []);
 
   const save = async () => {
     if (!ai.apiUrl || !ai.apiKey || !ai.model) { Alert.alert('请填写完整'); return; }
@@ -91,7 +92,6 @@ export default function SettingsScreen() {
 
   const changeInterval = async (m: number) => { setInterval_(m); await setReminderInterval(m); if (remindOn) (await import('../../lib/notifications')).schedulePeriodicReminder(); };
   const changeGran = async (m: number) => { setGran(m); await setGranularity(m); };
-  const changeTodoAdvance = async (m: number) => { setTodoAdvance(m); await setTodoReminderAdvance(m); };
 
   return (
     <SafeAreaView style={s.page} edges={['top']}>
@@ -160,15 +160,25 @@ export default function SettingsScreen() {
         </View>
 
         <View style={s.card}>
-          <Text style={s.cardTitle}>待办提醒</Text>
-          <Text style={s.cardDesc}>有计划时间的待办将提前提醒</Text>
-          <View style={s.chips}>
-            {TODO_REMINDER_OPTIONS.map(o => (
-              <TouchableOpacity key={o.value} style={[s.chip, todoAdvance === o.value && s.chipOn]} onPress={() => changeTodoAdvance(o.value)}>
-                <Text style={[s.chipText, todoAdvance === o.value && s.chipTextOn]}>{o.label}</Text>
-              </TouchableOpacity>
-            ))}
+          <View style={s.row}>
+            <Text style={s.cardTitle}>系统提示词</Text>
+            <View style={s.spacer} />
+            <TouchableOpacity onPress={() => { setPromptText(DEFAULT_SYSTEM_PROMPT); setSystemPrompt(''); }}>
+              <Text style={s.eyeText}>恢复默认</Text>
+            </TouchableOpacity>
           </View>
+          <Text style={s.cardDesc}>自定义 Agent 的行为规则，动态数据（时间、待办等）会自动注入</Text>
+          <TextInput
+            style={s.promptInput}
+            value={promptText}
+            onChangeText={setPromptText}
+            multiline
+            textAlignVertical="top"
+            placeholderTextColor={Colors.hint}
+          />
+          <TouchableOpacity style={s.saveBtn} onPress={async () => { await setSystemPrompt(promptText); Alert.alert('已保存'); }} activeOpacity={0.7}>
+            <Text style={s.saveText}>保存</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -197,6 +207,7 @@ const s = StyleSheet.create({
   testText: { fontSize: F.md, fontWeight: '600', color: Colors.primary },
   outlineBtn: { flex: 1, borderRadius: R.xl, height: 48, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.divider },
   outlineText: { fontSize: F.md, fontWeight: '600', color: Colors.text },
+  promptInput: { backgroundColor: Colors.surfaceAlt, borderRadius: R.md, paddingHorizontal: S.md, paddingVertical: S.md, fontSize: F.xs, color: Colors.text, marginBottom: S.md, borderWidth: 1, borderColor: Colors.divider, minHeight: 200, lineHeight: 18 },
   row: { flexDirection: 'row', alignItems: 'center', marginBottom: S.md },
   spacer: { flex: 1 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: S.sm },

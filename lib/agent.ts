@@ -1,4 +1,4 @@
-import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, completeTodo, findTodoByTitle, insertActivity } from './db';
+import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, completeTodo, uncompleteTodo, findTodoByTitle, insertActivity, getTodayRecords, updateRecord, deleteRecord, getSystemPrompt } from './db';
 import { scheduleTodoReminder, cancelTodoReminder } from './notifications';
 import { CategoryIcons } from '../constants/theme';
 
@@ -37,6 +37,7 @@ const tools = [
           title: { type: 'string', description: '待办标题' },
           recurring: { type: 'boolean', description: '是否每日重复（习惯），默认 false' },
           scheduled_time: { type: 'string', description: '计划时间，ISO 8601 格式，可选' },
+          reminder_advance: { type: 'number', description: '提前多少分钟提醒，可选。默认 10 分钟' },
         },
         required: ['title'],
       },
@@ -45,14 +46,68 @@ const tools = [
   {
     type: 'function' as const,
     function: {
-      name: 'complete_todo',
-      description: '标记一个待办事项为已完成。会根据标题模糊匹配已有的待办。',
+      name: 'update_todo',
+      description: '修改已有的待办事项。按标题模糊匹配，更新指定字段。可完成/取消完成待办。',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: '待办标题（模糊匹配）' },
+          completed: { type: 'boolean', description: '是否标记为已完成' },
+          new_title: { type: 'string', description: '修改后的新标题，可选' },
+          scheduled_time: { type: 'string', description: '新的计划时间，ISO 8601 格式，可选' },
+          reminder_advance: { type: 'number', description: '新的提前提醒分钟数，可选' },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'delete_todo',
+      description: '删除一个待办事项。按标题模糊匹配。',
       parameters: {
         type: 'object',
         properties: {
           title: { type: 'string', description: '待办标题（模糊匹配）' },
         },
         required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'update_activity',
+      description: '修改已有的活动记录。按活动名称模糊匹配今天最近的记录，更新指定字段。用于补充信息、修正错误或合并连续同类活动。',
+      parameters: {
+        type: 'object',
+        properties: {
+          activity: { type: 'string', description: '活动名称（模糊匹配）' },
+          start_time: { type: 'string', description: '限定匹配的开始时间范围，ISO 8601 格式，可选' },
+          end_time: { type: 'string', description: '新的结束时间，ISO 8601 格式' },
+          category: { type: 'string', description: '新的分类' },
+          details: { type: 'string', description: '新的活动细节' },
+          mood: { type: 'string', description: '新的情绪感受' },
+          social: { type: 'string', description: '新的社交信息' },
+          location: { type: 'string', description: '新的地点' },
+        },
+        required: ['activity'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'delete_activity',
+      description: '删除一条活动记录。按活动名称模糊匹配今天最近的记录。',
+      parameters: {
+        type: 'object',
+        properties: {
+          activity: { type: 'string', description: '活动名称（模糊匹配）' },
+          start_time: { type: 'string', description: '限定匹配的开始时间范围，ISO 8601 格式，可选' },
+        },
+        required: ['activity'],
       },
     },
   },
@@ -79,7 +134,52 @@ export interface AgentResult {
 
 // --- System Prompt ---
 
-function buildSystemPrompt(todos: { title: string; recurring: number; last_completed: string | null; scheduled_time: string | null }[], granularity: number, categories: string[]): string {
+export const DEFAULT_SYSTEM_PROMPT = `你是一个日程管理和记录助手。用户用自然语言描述他们的活动、计划和习惯，你通过调用工具来帮助他们管理。
+
+当前时间：{{current_time}}
+时间粒度：{{granularity}}分钟。所有 start_time 和 end_time 的分钟部分必须对齐到该粒度（向下取整 start_time，向上取整 end_time）。
+可用分类：{{categories}}
+
+## 当前待办列表
+{{todo_list}}
+
+## 工具使用规则
+
+### 记录已做的事
+用户描述已经发生或正在进行的事情 → 调用 create_activity。
+如果该活动恰好匹配某个未完成的待办 → 同时调用 update_todo(title="...", completed=true)。
+用户继续做同一件事（连续同类活动）→ 调用 update_activity 合并，延长 end_time。
+用户补充或修正已有活动信息 → 调用 update_activity。
+
+### 修改/合并活动
+- "刚才的课延长到5点" → update_activity(activity="上课", end_time="...")
+- "中午吃的是火锅" → update_activity(activity="午餐", details="火锅")
+- "3-4点的课删了" → delete_activity(activity="上课")
+
+### 创建待办
+用户描述未来的计划 → 调用 create_todo。
+- "我要养成每天X的习惯" → create_todo(title="X", recurring=true)
+- "X点要去做Y" → create_todo(title="Y", scheduled_time="...")
+- "记得做X" → create_todo(title="X")
+- "X点做Y" → create_todo(title="Y", scheduled_time="...", reminder_advance=10)
+- "X点做Y，提前N分钟提醒" → create_todo(title="Y", scheduled_time="...", reminder_advance=N)
+- 有 scheduled_time 时默认 reminder_advance=10，用户指定了其他值则用用户的值
+
+### 完成待办
+用户说某事做完了，且该事在待办列表中 → 调用 update_todo(title="...", completed=true)。
+
+### 删除待办
+用户要求删除某个待办 → 调用 delete_todo。
+
+### 注意
+- 一条消息可能需要调用多个工具
+- 时间推算：根据当前时间和用户的相对描述推算具体时间
+- 只提取用户明确提到的信息，不要编造
+- 对于 create_activity 的 category，优先从可用分类中选择
+- 如果没有合适的分类，可以自创分类名（简洁两字词），新分类会自动保存供后续复用
+- create_todo 如果用户指定了 scheduled_time 但没有指定提前提醒时间，默认设置 reminder_advance=10（分钟）`;
+
+function buildSystemPrompt(todos: { title: string; recurring: number; last_completed: string | null; scheduled_time: string | null }[], granularity: number, categories: string[], template: string): string {
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
@@ -94,35 +194,24 @@ function buildSystemPrompt(todos: { title: string; recurring: number; last_compl
       }).join('\n')
     : '（无待办）';
 
-  return `你是一个日程管理和记录助手。用户用自然语言描述他们的活动、计划和习惯，你通过调用工具来帮助他们管理。
+  return template
+    .replace('{{current_time}}', now.toISOString())
+    .replace('{{granularity}}', String(granularity))
+    .replace('{{categories}}', categories.join('、'))
+    .replace('{{todo_list}}', todoList);
+}
 
-当前时间：${now.toISOString()}
-时间粒度：${granularity}分钟。所有 start_time 和 end_time 的分钟部分必须对齐到该粒度（向下取整 start_time，向上取整 end_time）。
-可用分类：${categories.join('、')}
+// --- Activity matching helper ---
 
-## 当前待办列表
-${todoList}
-
-## 工具使用规则
-
-### 记录已做的事
-用户描述已经发生或正在进行的事情 → 调用 create_activity。
-如果该活动恰好匹配某个未完成的待办 → 同时调用 complete_todo。
-
-### 创建待办
-用户描述未来的计划 → 调用 create_todo。
-- "我要养成每天X的习惯" → create_todo(title="X", recurring=true)
-- "X点要去做Y" → create_todo(title="Y", scheduled_time="...")
-- "记得做X" → create_todo(title="X")
-
-### 完成待办
-用户说某事做完了，且该事在待办列表中 → 调用 complete_todo。
-
-### 注意
-- 一条消息可能需要调用多个工具
-- 时间推算：根据当前时间和用户的相对描述推算具体时间
-- 只提取用户明确提到的信息，不要编造
-- 对于 create_activity 的 category，优先从可用分类中选择`;
+async function findTodayActivity(name: string, startTime?: string): Promise<{ id: string; activity: string } | null> {
+  const records = await getTodayRecords();
+  const lower = name.toLowerCase();
+  const candidates = startTime
+    ? records.filter(r => r.start_time.startsWith(startTime.slice(0, 10)))
+    : records;
+  const match = candidates.find(r => r.activity.toLowerCase() === lower)
+    ?? candidates.find(r => r.activity.toLowerCase().includes(lower) || lower.includes(r.activity.toLowerCase()));
+  return match ? { id: match.id, activity: match.activity } : null;
 }
 
 // --- Tool Executor ---
@@ -156,27 +245,67 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         return { success: true, id };
       }
       case 'create_todo': {
+        const advance = (args.reminder_advance as number) ?? 10;
         const id = await addTodo(
           args.title as string,
           (args.recurring as boolean) || false,
           (args.scheduled_time as string) || undefined,
+          args.scheduled_time ? advance : undefined,
         );
         if (args.scheduled_time) {
-          await scheduleTodoReminder(id, args.title as string, args.scheduled_time as string);
+          await scheduleTodoReminder(id, args.title as string, args.scheduled_time as string, advance);
         }
         return { success: true, id };
       }
-      case 'complete_todo': {
+      case 'update_todo': {
         const todo = await findTodoByTitle(args.title as string);
-        if (todo) {
-          if (todo.last_completed) {
-            return { success: true, message: '已经是完成状态' };
+        if (!todo) return { success: false, message: `未找到待办「${args.title as string}」` };
+        if (args.completed === true) {
+          if (!todo.last_completed) {
+            await completeTodo(todo.id);
+            await cancelTodoReminder(todo.id);
           }
-          await completeTodo(todo.id);
-          await cancelTodoReminder(todo.id);
           return { success: true };
         }
-        return { success: false, message: `未找到待办「${args.title as string}」` };
+        if (args.completed === false) {
+          await uncompleteTodo(todo.id);
+          return { success: true };
+        }
+        return { success: true, message: '没有需要更新的字段' };
+      }
+      case 'delete_todo': {
+        const todo = await findTodoByTitle(args.title as string);
+        if (!todo) return { success: false, message: `未找到待办「${args.title as string}」` };
+        const { deleteTodo } = await import('./db');
+        await deleteTodo(todo.id);
+        await cancelTodoReminder(todo.id);
+        return { success: true, id: todo.id };
+      }
+      case 'update_activity': {
+        const found = await findTodayActivity(args.activity as string, args.start_time as string | undefined);
+        if (!found) return { success: false, message: `未找到活动「${args.activity as string}」` };
+        const updates: Record<string, unknown> = {};
+        for (const key of ['end_time', 'category', 'details', 'mood', 'social', 'location'] as const) {
+          if (args[key] !== undefined) updates[key] = args[key];
+        }
+        if (Object.keys(updates).length === 0) return { success: true, message: '没有需要更新的字段' };
+        await updateRecord(found.id, updates);
+        // Save new category if needed
+        if (updates.category) {
+          const defaultCategories = Object.keys(CategoryIcons);
+          const custom = await getCustomCategories();
+          const all = [...defaultCategories, ...custom];
+          if (!all.includes(updates.category as string)) {
+            await addCustomCategory(updates.category as string);
+          }
+        }
+        return { success: true, id: found.id };
+      }
+      case 'delete_activity': {
+        const found = await findTodayActivity(args.activity as string, args.start_time as string | undefined);
+        if (!found) return { success: false, message: `未找到活动「${args.activity as string}」` };
+        await deleteRecord(found.id);
+        return { success: true, id: found.id };
       }
       default:
         return { success: false, message: `未知工具: ${name}` };
@@ -212,9 +341,10 @@ async function buildContext(): Promise<{ systemPrompt: string; url: string; apiK
   const customCategories = await getCustomCategories();
   const categories = [...defaultCategories, ...customCategories.filter(c => !defaultCategories.includes(c))];
   const todos = await getAllTodos();
+  const customPrompt = await getSystemPrompt();
 
   return {
-    systemPrompt: buildSystemPrompt(todos, granularity, categories),
+    systemPrompt: buildSystemPrompt(todos, granularity, categories, customPrompt || DEFAULT_SYSTEM_PROMPT),
     url: settings.apiUrl.replace(/\/$/, '') + '/chat/completions',
     apiKey: settings.apiKey,
     model: settings.model,
@@ -387,8 +517,9 @@ export async function runAgent(userText: string): Promise<AgentResult> {
   const customCategories = await getCustomCategories();
   const categories = [...defaultCategories, ...customCategories.filter(c => !defaultCategories.includes(c))];
   const todos = await getAllTodos();
+  const customPrompt = await getSystemPrompt();
 
-  const systemPrompt = buildSystemPrompt(todos, granularity, categories);
+  const systemPrompt = buildSystemPrompt(todos, granularity, categories, customPrompt || DEFAULT_SYSTEM_PROMPT);
 
   interface Message {
     role: 'system' | 'user' | 'assistant' | 'tool';

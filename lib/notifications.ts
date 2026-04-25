@@ -21,7 +21,7 @@ export async function setupNotificationListener(_onPress?: () => void): Promise<
   return () => {};
 }
 
-export async function scheduleTodoReminder(_todoId: string, _title: string, _scheduledTime: string): Promise<void> {
+export async function scheduleTodoReminder(_todoId: string, _title: string, _scheduledTime: string, _advanceMinutes?: number): Promise<void> {
   // No-op in Expo Go
 }
 

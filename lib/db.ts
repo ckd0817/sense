@@ -64,6 +64,7 @@ async function initDB(database: SQLite.SQLiteDatabase): Promise<void> {
       title TEXT NOT NULL,
       recurring INTEGER NOT NULL DEFAULT 0,
       scheduled_time TEXT,
+      reminder_advance INTEGER,
       last_completed TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
@@ -180,6 +181,7 @@ export interface Todo {
   title: string;
   recurring: number;
   scheduled_time: string | null;
+  reminder_advance: number | null;
   last_completed: string | null;
   sort_order: number;
   created_at: string;
@@ -208,12 +210,12 @@ export async function getTodayTodos(): Promise<Todo[]> {
   }));
 }
 
-export async function addTodo(title: string, recurring: boolean = false, scheduled_time?: string): Promise<string> {
+export async function addTodo(title: string, recurring: boolean = false, scheduled_time?: string, reminder_advance?: number): Promise<string> {
   const database = await getDB();
   const id = generateId();
   await database.runAsync(
-    'INSERT INTO todos (id, title, recurring, scheduled_time, last_completed, sort_order, created_at) VALUES (?, ?, ?, ?, NULL, 0, ?)',
-    [id, title, recurring ? 1 : 0, scheduled_time ?? null, new Date().toISOString()]
+    'INSERT INTO todos (id, title, recurring, scheduled_time, reminder_advance, last_completed, sort_order, created_at) VALUES (?, ?, ?, ?, ?, NULL, 0, ?)',
+    [id, title, recurring ? 1 : 0, scheduled_time ?? null, reminder_advance ?? null, new Date().toISOString()]
   );
   return id;
 }
@@ -322,6 +324,16 @@ export async function setTodoReminderAdvance(minutes: number): Promise<void> {
   await setSetting('todo_reminder_advance', String(minutes));
 }
 
+// --- System Prompt ---
+
+export async function getSystemPrompt(): Promise<string | null> {
+  return getSetting('system_prompt');
+}
+
+export async function setSystemPrompt(prompt: string): Promise<void> {
+  await setSetting('system_prompt', prompt);
+}
+
 // --- Chat Messages ---
 
 export interface ChatMessage {
@@ -402,9 +414,9 @@ export async function importRecords(json: string): Promise<number> {
     for (const t of data.todos) {
       const id = t.id || generateId();
       await database.runAsync(
-        `INSERT OR REPLACE INTO todos (id, title, recurring, scheduled_time, last_completed, sort_order, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [id, t.title, t.recurring ?? 0, t.scheduled_time ?? null, t.last_completed ?? null, t.sort_order ?? 0, t.created_at ?? new Date().toISOString()]
+        `INSERT OR REPLACE INTO todos (id, title, recurring, scheduled_time, reminder_advance, last_completed, sort_order, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, t.title, t.recurring ?? 0, t.scheduled_time ?? null, t.reminder_advance ?? null, t.last_completed ?? null, t.sort_order ?? 0, t.created_at ?? new Date().toISOString()]
       );
       count++;
     }
