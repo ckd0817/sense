@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, LayoutAnimation, Dimensions } from 'react-native';
-import { Colors, S, R, F, HOUR_HEIGHT, Categories, CategoryColors } from '../constants/theme';
+import { Ionicons } from '@expo/vector-icons';
+import { Colors, S, R, F, HOUR_HEIGHT, CategoryIcons, CategoryColors } from '../constants/theme';
 import { Record, getRecordsByDateRange } from '../lib/db';
 import { snapTime } from '../lib/time';
 
@@ -84,7 +85,7 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
     const top = startOffset * HOUR_HEIGHT;
     const height = durationHours * HOUR_HEIGHT;
     const bg = CategoryColors[rec.category] || CategoryColors['其他'];
-    const emoji = Categories[rec.category] || '·';
+    const iconName = CategoryIcons[rec.category] || 'ellipse-outline';
     const isOpen = expanded === rec.id;
 
     if (startOffset < 0 || startOffset >= HOURS) return null;
@@ -96,11 +97,11 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
         onPress={() => toggleExpand(rec.id)}
         activeOpacity={0.7}
       >
-        <Text style={s.blockLabel} numberOfLines={1}>{emoji} {rec.activity}</Text>
+        <Text style={s.blockLabel} numberOfLines={1}>{rec.activity}</Text>
         {isOpen && (
           <View style={s.blockDetail}>
             {rec.details ? <Text style={s.blockDetailText} numberOfLines={3}>{rec.details}</Text> : null}
-            {rec.location ? <Text style={s.blockMeta}>📍 {rec.location}</Text> : null}
+            {rec.location ? <View style={s.blockMetaRow}><Ionicons name="location-outline" size={10} color={Colors.subtext} /><Text style={s.blockMeta}>{rec.location}</Text></View> : null}
           </View>
         )}
       </TouchableOpacity>
@@ -197,5 +198,6 @@ const s = StyleSheet.create({
   blockLabel: { fontSize: 10, fontWeight: '600', color: Colors.text, lineHeight: 13 },
   blockDetail: { marginTop: 2, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.divider, paddingTop: 2 },
   blockDetailText: { fontSize: 8, color: Colors.text, lineHeight: 12 },
-  blockMeta: { fontSize: 8, color: Colors.subtext, marginTop: 1 },
+  blockMeta: { fontSize: 8, color: Colors.subtext, marginLeft: 2 },
+  blockMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 1 },
 });

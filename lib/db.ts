@@ -16,16 +16,16 @@ function generateId(): string {
 let db: SQLite.SQLiteDatabase | null = null;
 
 export async function getDB(): Promise<SQLite.SQLiteDatabase> {
-  if (!db) {
+  if (db) {
     try {
-      db = await SQLite.openDatabaseAsync(DB_NAME);
-      await initDB(db);
+      await db.getFirstAsync('SELECT 1');
+      return db;
     } catch {
-      // Stale connection after hot reload — reopen
-      db = await SQLite.openDatabaseAsync(DB_NAME);
-      await initDB(db);
+      db = null;
     }
   }
+  db = await SQLite.openDatabaseAsync(DB_NAME);
+  await initDB(db);
   return db;
 }
 
@@ -33,9 +33,7 @@ async function initDB(database: SQLite.SQLiteDatabase): Promise<void> {
   await database.execAsync(`
     PRAGMA journal_mode = WAL;
 
-    DROP TABLE IF EXISTS records;
-
-    CREATE TABLE records (
+    CREATE TABLE IF NOT EXISTS records (
       id TEXT PRIMARY KEY,
       created_at TEXT NOT NULL,
       start_time TEXT NOT NULL,
@@ -54,51 +52,6 @@ async function initDB(database: SQLite.SQLiteDatabase): Promise<void> {
       value TEXT NOT NULL
     );
   `);
-
-  // Seed test data
-  try {
-    await seedTestData(database);
-  } catch {}
-}
-
-async function seedTestData(database: SQLite.SQLiteDatabase): Promise<void> {
-  const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
-  const dayBefore = new Date(now); dayBefore.setDate(dayBefore.getDate() - 2);
-  const dayBeforeStr = `${dayBefore.getFullYear()}-${String(dayBefore.getMonth() + 1).padStart(2, '0')}-${String(dayBefore.getDate()).padStart(2, '0')}`;
-
-  const seedData = [
-    // Today
-    { created_at: `${today}T07:30:00`, start_time: `${today}T07:00:00`, end_time: `${today}T07:30:00`, raw_text: '早上跑步', activity: '晨跑', category: '运动', details: '绕操场跑了三圈', mood: '精神', social: '', location: '操场' },
-    { created_at: `${today}T08:15:00`, start_time: `${today}T08:00:00`, end_time: `${today}T08:30:00`, raw_text: '吃早饭', activity: '早餐', category: '饮食', details: '豆浆油条', mood: '', social: '', location: '食堂' },
-    { created_at: `${today}T10:10:00`, start_time: `${today}T08:30:00`, end_time: `${today}T10:00:00`, raw_text: '上了两节数学课', activity: '数学课', category: '学习', details: '学了线性代数', mood: '还行', social: '', location: '教学楼' },
-    { created_at: `${today}T12:10:00`, start_time: `${today}T11:30:00`, end_time: `${today}T12:30:00`, raw_text: '和同学在食堂吃午饭', activity: '午餐', category: '饮食', details: '吃了饺子', mood: '满足', social: '同学', location: '食堂' },
-    { created_at: `${today}T14:10:00`, start_time: `${today}T13:00:00`, end_time: `${today}T14:00:00`, raw_text: '午休', activity: '午休', category: '休息', details: '睡了一小时', mood: '舒服', social: '', location: '宿舍' },
-    { created_at: `${today}T17:10:00`, start_time: `${today}T14:00:00`, end_time: `${today}T17:00:00`, raw_text: '写代码', activity: '编程', category: '工作', details: '做了一个App', mood: '有成就感', social: '', location: '图书馆' },
-    { created_at: `${today}T18:10:00`, start_time: `${today}T17:30:00`, end_time: `${today}T18:30:00`, raw_text: '打篮球', activity: '篮球', category: '运动', details: '打了全场', mood: '累但开心', social: '室友', location: '体育馆' },
-    // Yesterday
-    { created_at: `${yesterdayStr}T08:10:00`, start_time: `${yesterdayStr}T08:00:00`, end_time: `${yesterdayStr}T08:30:00`, raw_text: '吃早饭', activity: '早餐', category: '饮食', details: '包子粥', mood: '', social: '', location: '食堂' },
-    { created_at: `${yesterdayStr}T12:10:00`, start_time: `${yesterdayStr}T10:00:00`, end_time: `${yesterdayStr}T12:00:00`, raw_text: '上英语课', activity: '英语课', category: '学习', details: '听力练习', mood: '', social: '', location: '教学楼' },
-    { created_at: `${yesterdayStr}T14:10:00`, start_time: `${yesterdayStr}T13:00:00`, end_time: `${yesterdayStr}T14:00:00`, raw_text: '午休', activity: '午休', category: '休息', details: '', mood: '', social: '', location: '宿舍' },
-    { created_at: `${yesterdayStr}T17:10:00`, start_time: `${yesterdayStr}T14:00:00`, end_time: `${yesterdayStr}T17:00:00`, raw_text: '复习考试', activity: '复习', category: '学习', details: '复习高数', mood: '紧张', social: '', location: '图书馆' },
-    { created_at: `${yesterdayStr}T19:10:00`, start_time: `${yesterdayStr}T18:00:00`, end_time: `${yesterdayStr}T19:00:00`, raw_text: '和朋友打羽毛球', activity: '羽毛球', category: '运动', details: '', mood: '开心', social: '朋友', location: '体育馆' },
-    { created_at: `${yesterdayStr}T22:10:00`, start_time: `${yesterdayStr}T20:00:00`, end_time: `${yesterdayStr}T22:00:00`, raw_text: '看电影', activity: '看电影', category: '娱乐', details: '看了个科幻片', mood: '', social: '室友', location: '宿舍' },
-    // Day before yesterday
-    { created_at: `${dayBeforeStr}T09:10:00`, start_time: `${dayBeforeStr}T08:00:00`, end_time: `${dayBeforeStr}T09:00:00`, raw_text: '超市买东西', activity: '购物', category: '购物', details: '买了零食和日用品', mood: '', social: '', location: '超市' },
-    { created_at: `${dayBeforeStr}T12:10:00`, start_time: `${dayBeforeStr}T10:00:00`, end_time: `${dayBeforeStr}T12:00:00`, raw_text: '做实验', activity: '实验', category: '学习', details: '物理实验', mood: '', social: '同学', location: '实验室' },
-    { created_at: `${dayBeforeStr}T15:10:00`, start_time: `${dayBeforeStr}T14:00:00`, end_time: `${dayBeforeStr}T15:00:00`, raw_text: '打扫宿舍', activity: '打扫', category: '家务', details: '拖地擦桌子', mood: '累', social: '室友', location: '宿舍' },
-  ];
-
-  for (const d of seedData) {
-    const id = generateId();
-    await database.runAsync(
-      `INSERT INTO records (id, created_at, start_time, end_time, raw_text, activity, category, details, mood, social, location)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, d.created_at, d.start_time, d.end_time, d.raw_text, d.activity, d.category, d.details, d.mood, d.social, d.location]
-    );
-  }
 }
 
 // --- Records ---
@@ -134,10 +87,11 @@ export async function getRecordsByDate(date: string): Promise<Record[]> {
   const [y, m, d] = date.split('-').map(Number);
   const start = new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
   const end = new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
-  return await database.getAllAsync<Record>(
-    'SELECT * FROM records WHERE start_time >= ? AND start_time <= ? ORDER BY start_time ASC',
+  const records = await database.getAllAsync<Record>(
+    'SELECT * FROM records WHERE start_time >= ? AND start_time <= ?',
     [start, end]
   );
+  return records.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
 }
 
 export async function getTodayRecords(): Promise<Record[]> {
@@ -166,15 +120,43 @@ export async function getRecordsByDateRange(startDate: string, endDate: string):
   const [y2, m2, d2] = endDate.split('-').map(Number);
   const start = new Date(y1, m1 - 1, d1, 0, 0, 0, 0).toISOString();
   const end = new Date(y2, m2 - 1, d2, 23, 59, 59, 999).toISOString();
-  return await database.getAllAsync<Record>(
-    'SELECT * FROM records WHERE start_time >= ? AND start_time <= ? ORDER BY start_time ASC',
+  const records = await database.getAllAsync<Record>(
+    'SELECT * FROM records WHERE start_time >= ? AND start_time <= ?',
     [start, end]
   );
+  return records.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
 }
 
 export async function deleteRecord(id: string): Promise<void> {
   const database = await getDB();
   await database.runAsync('DELETE FROM records WHERE id = ?', [id]);
+}
+
+export async function updateRecord(id: string, updates: Partial<Omit<Record, 'id'>>): Promise<void> {
+  const database = await getDB();
+  const fields = Object.keys(updates);
+  const values = Object.values(updates);
+  if (fields.length === 0) return;
+  const setClause = fields.map(f => `${f} = ?`).join(', ');
+  await database.runAsync(
+    `UPDATE records SET ${setClause} WHERE id = ?`,
+    [...values, id]
+  );
+}
+
+// --- Custom Categories ---
+
+export async function getCustomCategories(): Promise<string[]> {
+  const val = await getSetting('custom_categories');
+  return val ? JSON.parse(val) : [];
+}
+
+export async function addCustomCategory(name: string): Promise<void> {
+  const existing = await getCustomCategories();
+  if (!existing.includes(name)) {
+    existing.push(name);
+    await setSetting('custom_categories', JSON.stringify(existing));
+  }
 }
 
 // --- Settings ---
@@ -232,4 +214,34 @@ export async function getGranularity(): Promise<number> {
 
 export async function setGranularity(minutes: number): Promise<void> {
   await setSetting('granularity', String(minutes));
+}
+
+// --- Import / Export ---
+
+export async function exportAllRecords(): Promise<string> {
+  const database = await getDB();
+  const records = await database.getAllAsync<Record>(
+    'SELECT * FROM records ORDER BY start_time ASC'
+  );
+  return JSON.stringify({ version: 1, records }, null, 2);
+}
+
+export async function importRecords(json: string): Promise<number> {
+  const data = JSON.parse(json);
+  if (!data.records || !Array.isArray(data.records)) {
+    throw new Error('无效的数据格式：缺少 records 数组');
+  }
+  const database = await getDB();
+  let count = 0;
+  for (const r of data.records) {
+    const id = r.id || generateId();
+    await database.runAsync(
+      `INSERT OR REPLACE INTO records (id, created_at, start_time, end_time, raw_text, activity, category, details, mood, social, location)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, r.created_at, r.start_time, r.end_time ?? null, r.raw_text,
+       r.activity ?? '', r.category ?? '其他', r.details ?? '', r.mood ?? '', r.social ?? '', r.location ?? '']
+    );
+    count++;
+  }
+  return count;
 }

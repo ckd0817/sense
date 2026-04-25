@@ -1,8 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert, Switch, ScrollView } from 'react-native';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert, Switch, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getAISettings, setAISettings, getReminderInterval, setReminderInterval, getGranularity, setGranularity, AISettings } from '../../lib/db';
+import { getAISettings, setAISettings, getReminderInterval, setReminderInterval, getGranularity, setGranularity, AISettings, exportAllRecords, importRecords } from '../../lib/db';
+import { testConnection } from '../../lib/ai';
 import { Colors, S, R, F, REMINDER_OPTIONS, GRANULARITY_OPTIONS } from '../../constants/theme';
+import { Paths, File, Directory } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as DocumentPicker from 'expo-document-picker';
 
 export default function SettingsScreen() {
   const [ai, setAi] = useState<AISettings>({ apiUrl: '', apiKey: '', model: '' });
@@ -11,6 +15,8 @@ export default function SettingsScreen() {
   const [remindOn, setRemindOn] = useState(true);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => { (async () => { setAi(await getAISettings()); setInterval_(await getReminderInterval()); setGran(await getGranularity()); })(); }, []);
 
@@ -18,6 +24,59 @@ export default function SettingsScreen() {
     if (!ai.apiUrl || !ai.apiKey || !ai.model) { Alert.alert('请填写完整'); return; }
     setSaving(true);
     try { await setAISettings(ai); Alert.alert('已保存'); } finally { setSaving(false); }
+  };
+
+  const handleTest = async () => {
+    if (!ai.apiUrl || !ai.apiKey || !ai.model) { Alert.alert('请先填写完整的 API 配置'); return; }
+    setTesting(true);
+    try {
+      const msg = await testConnection(ai);
+      Alert.alert('连接成功', msg);
+    } catch (e) {
+      Alert.alert('连接失败', e instanceof Error ? e.message : '未知错误');
+    } finally { setTesting(false); }
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const json = await exportAllRecords();
+      const file = new File(Paths.document, 'sense-export.json');
+      file.write(json);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(file.uri, { mimeType: 'application/json', dialogTitle: '导出数据' });
+      } else {
+        Alert.alert('导出完成', `文件已保存到 ${file.uri}`);
+      }
+    } catch (e) {
+      Alert.alert('导出失败', e instanceof Error ? e.message : '未知错误');
+    } finally { setExporting(false); }
+  };
+
+  const handleImport = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: 'application/json' });
+      if (result.canceled || !result.assets?.[0]) return;
+      const file = new File(result.assets[0].uri);
+      const json = await file.text();
+      Alert.alert(
+        '确认导入',
+        '导入将覆盖同 ID 的记录，是否继续？',
+        [
+          { text: '取消', style: 'cancel' },
+          { text: '导入', onPress: async () => {
+            try {
+              const count = await importRecords(json);
+              Alert.alert('导入成功', `已导入 ${count} 条记录`);
+            } catch (e) {
+              Alert.alert('导入失败', e instanceof Error ? e.message : '未知错误');
+            }
+          }},
+        ]
+      );
+    } catch (e) {
+      Alert.alert('选择文件失败', e instanceof Error ? e.message : '未知错误');
+    }
   };
 
   const toggleRemind = async (on: boolean) => {
@@ -48,7 +107,12 @@ export default function SettingsScreen() {
           </View>
           <Text style={s.label}>Model</Text>
           <TextInput style={s.input} value={ai.model} onChangeText={v => setAi({ ...ai, model: v })} placeholder="gpt-4o-mini" placeholderTextColor={Colors.hint} autoCapitalize="none" autoCorrect={false} />
-          <TouchableOpacity style={[s.saveBtn, saving && s.saveOff]} onPress={save} disabled={saving}><Text style={s.saveText}>{saving ? '...' : '保存'}</Text></TouchableOpacity>
+          <View style={s.btnRow}>
+            <TouchableOpacity style={[s.testBtn, testing && s.saveOff]} onPress={handleTest} disabled={testing}>
+              {testing ? <ActivityIndicator size="small" color={Colors.primary} /> : <Text style={s.testText}>测试连接</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.saveBtn, saving && s.saveOff]} onPress={save} disabled={saving}><Text style={s.saveText}>{saving ? '...' : '保存'}</Text></TouchableOpacity>
+          </View>
         </View>
 
         <View style={s.card}>
@@ -60,6 +124,19 @@ export default function SettingsScreen() {
                 <Text style={[s.chipText, gran === o.value && s.chipTextOn]}>{o.label}</Text>
               </TouchableOpacity>
             ))}
+          </View>
+        </View>
+
+        <View style={s.card}>
+          <Text style={s.cardTitle}>数据管理</Text>
+          <Text style={s.cardDesc}>导出或导入活动记录（JSON 格式）</Text>
+          <View style={s.btnRow}>
+            <TouchableOpacity style={s.outlineBtn} onPress={handleImport}>
+              <Text style={s.outlineText}>导入</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.saveBtn, exporting && s.saveOff]} onPress={handleExport} disabled={exporting}>
+              {exporting ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.saveText}>导出</Text>}
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -98,9 +175,14 @@ const s = StyleSheet.create({
   keyInput: { flex: 1, borderWidth: 0, backgroundColor: 'transparent', marginBottom: 0 },
   eye: { padding: S.sm },
   eyeText: { fontSize: F.xs, color: Colors.primary, fontWeight: '500' as const },
-  saveBtn: { backgroundColor: Colors.primary, borderRadius: R.xl, height: 48, justifyContent: 'center', alignItems: 'center', marginTop: S.sm },
+  btnRow: { flexDirection: 'row', gap: S.sm, marginTop: S.sm },
+  saveBtn: { flex: 1, backgroundColor: Colors.primary, borderRadius: R.xl, height: 48, justifyContent: 'center', alignItems: 'center' },
   saveOff: { opacity: 0.4 },
   saveText: { fontSize: F.md, fontWeight: '600', color: '#FFFFFF' },
+  testBtn: { flex: 1, borderRadius: R.xl, height: 48, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.primary },
+  testText: { fontSize: F.md, fontWeight: '600', color: Colors.primary },
+  outlineBtn: { flex: 1, borderRadius: R.xl, height: 48, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.divider },
+  outlineText: { fontSize: F.md, fontWeight: '600', color: Colors.text },
   row: { flexDirection: 'row', alignItems: 'center', marginBottom: S.md },
   spacer: { flex: 1 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: S.sm },

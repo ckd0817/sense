@@ -48,19 +48,22 @@ export const F = {
   hero: 40, // hero display
 };
 
-export const Categories: Record<string, string> = {
-  '饮食': '🍜',
-  '学习': '📖',
-  '工作': '⚒️',
-  '运动': '🦵',
-  '社交': '🕯️',
-  '娱乐': '🎸',
-  '休息': '🌙',
-  '交通': '🚶',
-  '家务': '🧹',
-  '购物': '🛍️',
-  '个人护理': '💧',
-  '其他': '·',
+export const DEFAULT_ICON = 'ellipse-outline';
+export const DEFAULT_COLOR = '#F5F5F5';
+
+export const CategoryIcons: Record<string, string> = {
+  '饮食': 'restaurant-outline',
+  '学习': 'book-outline',
+  '工作': 'briefcase-outline',
+  '运动': 'fitness-outline',
+  '社交': 'people-outline',
+  '娱乐': 'musical-notes-outline',
+  '休息': 'moon-outline',
+  '交通': 'walk-outline',
+  '家务': 'home-outline',
+  '购物': 'bag-outline',
+  '护理': 'water-outline',
+  '其他': 'ellipse-outline',
 };
 
 export const CategoryColors: Record<string, string> = {
@@ -74,7 +77,7 @@ export const CategoryColors: Record<string, string> = {
   '交通': '#E0F2F1',
   '家务': '#EFEBE9',
   '购物': '#FBE9E7',
-  '个人护理': '#E1F5FE',
+  '护理': '#E1F5FE',
   '其他': '#F5F5F5',
 };
 

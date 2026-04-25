@@ -95,7 +95,7 @@ export default function TodayScreen() {
               <FlatList
                 data={records}
                 keyExtractor={item => item.id}
-                renderItem={({ item }) => <ActivityBlock record={item} />}
+                renderItem={({ item }) => <ActivityBlock record={item} onChanged={loadToday} />}
                 contentContainerStyle={s.list}
                 refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadToday(); setRefreshing(false); }} tintColor={Colors.hint} />}
               />
