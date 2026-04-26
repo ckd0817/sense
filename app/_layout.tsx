@@ -9,7 +9,30 @@ import { Colors } from '../constants/theme';
 
 export default function RootLayout() {
   useEffect(() => {
-    import('../lib/notifications').then(m => { m.initNotificationHandler(); m.setupNotificationChannel(); }).catch(() => {});
+    (async () => {
+      const { initNotificationHandler, setupNotificationChannel, scheduleRecordReminder, scheduleTodoReminder } = await import('../lib/notifications');
+      initNotificationHandler();
+      await setupNotificationChannel();
+
+      const { getReminderEnabled, getAllTodos } = await import('../lib/db');
+
+      // Restore record reminder
+      if (await getReminderEnabled()) {
+        await scheduleRecordReminder();
+      }
+
+      // Restore todo reminders
+      const todos = await getAllTodos();
+      const now = Date.now();
+      for (const t of todos) {
+        if (t.scheduled_time && !t.last_completed) {
+          const target = new Date(t.scheduled_time).getTime() - (t.reminder_advance ?? 10) * 60 * 1000;
+          if (target > now) {
+            await scheduleTodoReminder(t.id, t.title, t.scheduled_time, t.reminder_advance ?? 10);
+          }
+        }
+      }
+    })().catch(() => {});
   }, []);
 
   return (

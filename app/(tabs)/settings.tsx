@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert, Switch, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getAISettings, setAISettings, getReminderInterval, setReminderInterval, getGranularity, setGranularity, getSystemPrompt, setSystemPrompt, AISettings, exportAllRecords, importRecords } from '../../lib/db';
+import { getAISettings, setAISettings, getReminderInterval, setReminderInterval, getGranularity, setGranularity, getSystemPrompt, setSystemPrompt, getReminderEnabled, setReminderEnabled, AISettings, exportAllRecords, importRecords } from '../../lib/db';
 import { testConnection } from '../../lib/ai';
 import { DEFAULT_SYSTEM_PROMPT } from '../../lib/agent';
 import { Colors, S, R, F, GRANULARITY_OPTIONS } from '../../constants/theme';
@@ -20,7 +20,7 @@ export default function SettingsScreen() {
   const [exporting, setExporting] = useState(false);
   const [promptText, setPromptText] = useState(DEFAULT_SYSTEM_PROMPT);
 
-  useEffect(() => { (async () => { setAi(await getAISettings()); setInterval_(await getReminderInterval()); setGran(await getGranularity()); const sp = await getSystemPrompt(); setPromptText(sp || DEFAULT_SYSTEM_PROMPT); })(); }, []);
+  useEffect(() => { (async () => { setAi(await getAISettings()); setInterval_(await getReminderInterval()); setGran(await getGranularity()); setRemindOn(await getReminderEnabled()); const sp = await getSystemPrompt(); setPromptText(sp || DEFAULT_SYSTEM_PROMPT); })(); }, []);
 
   const save = async () => {
     if (!ai.apiUrl || !ai.apiKey || !ai.model) { Alert.alert('请填写完整'); return; }
@@ -82,12 +82,15 @@ export default function SettingsScreen() {
   };
 
   const toggleRemind = async (on: boolean) => {
-    setRemindOn(on);
     if (on) {
       const { requestNotificationPermission, scheduleRecordReminder } = await import('../../lib/notifications');
-      if (!(await requestNotificationPermission())) { Alert.alert('需要通知权限'); setRemindOn(false); return; }
+      if (!(await requestNotificationPermission())) { Alert.alert('需要通知权限'); return; }
       await scheduleRecordReminder();
-    } else { (await import('../../lib/notifications')).cancelReminders(); }
+    } else {
+      (await import('../../lib/notifications')).cancelReminders();
+    }
+    setRemindOn(on);
+    await setReminderEnabled(on);
   };
 
   const changeInterval = async (h: number) => { setInterval_(h); await setReminderInterval(h); if (remindOn) (await import('../../lib/notifications')).scheduleRecordReminder(); };

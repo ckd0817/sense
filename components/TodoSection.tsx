@@ -4,6 +4,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, S, R, F } from '../constants/theme';
 import { Todo, deleteTodo, completeTodo, uncompleteTodo, addTodo } from '../lib/db';
+import EditTodoModal from './EditTodoModal';
 
 interface Props {
   todos: Todo[];
@@ -14,6 +15,8 @@ export default function TodoSection({ todos, onChanged }: Props) {
   const [adding, setAdding] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [habitMode, setHabitMode] = useState(false);
+  const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
+  const swipeRef = React.useRef<Swipeable>(null);
 
   const pending = todos.filter(t => !t.last_completed);
   const completed = todos.filter(t => !!t.last_completed);
@@ -36,16 +39,26 @@ export default function TodoSection({ todos, onChanged }: Props) {
     onChanged();
   };
 
-  const renderRightActions = (id: string) => (
+  const handleEdit = (todo: Todo) => {
+    swipeRef.current?.close();
+    setEditingTodo(todo);
+  };
+
+  const renderRightActions = (todo: Todo) => (
     <View style={s.swipeActions}>
-      <TouchableOpacity style={s.swipeDelBtn} onPress={async () => { await deleteTodo(id); onChanged(); }}>
+      <TouchableOpacity style={s.swipeEditBtn} onPress={() => handleEdit(todo)}>
+        <Ionicons name="create-outline" size={18} color="#fff" />
+        <Text style={s.swipeBtnText}>编辑</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={s.swipeDelBtn} onPress={async () => { await deleteTodo(todo.id); onChanged(); }}>
         <Ionicons name="trash-outline" size={18} color="#fff" />
+        <Text style={s.swipeBtnText}>删除</Text>
       </TouchableOpacity>
     </View>
   );
 
   const renderItem = (todo: Todo) => (
-    <Swipeable key={todo.id} renderRightActions={() => renderRightActions(todo.id)} overshootRight={false} friction={2}>
+    <Swipeable key={todo.id} ref={todo.id === editingTodo?.id ? swipeRef : undefined} renderRightActions={() => renderRightActions(todo)} overshootRight={false} friction={2}>
       <TouchableOpacity style={s.item} onPress={() => toggle(todo)} activeOpacity={0.7}>
         <View style={[s.check, todo.last_completed && s.checked]}>
           {todo.last_completed ? <Ionicons name="checkmark" size={14} color="#fff" /> : null}
@@ -123,6 +136,15 @@ export default function TodoSection({ todos, onChanged }: Props) {
             <Ionicons name="close" size={18} color={Colors.hint} />
           </TouchableOpacity>
         </View>
+      )}
+
+      {editingTodo && (
+        <EditTodoModal
+          todo={editingTodo}
+          visible={true}
+          onClose={() => setEditingTodo(null)}
+          onSaved={onChanged}
+        />
       )}
     </View>
   );
@@ -223,13 +245,28 @@ const s = StyleSheet.create({
     alignItems: 'center',
     paddingLeft: S.sm,
   },
+  swipeEditBtn: {
+    width: 56,
+    height: 44,
+    borderRadius: R.md,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: S.sm,
+  },
   swipeDelBtn: {
-    width: 44,
+    width: 56,
     height: 44,
     borderRadius: R.md,
     backgroundColor: '#FF3B30',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  swipeBtnText: {
+    fontSize: 10,
+    color: '#fff',
+    fontWeight: '600',
+    marginTop: 1,
   },
   addRow: {
     flexDirection: 'row',

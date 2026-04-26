@@ -201,14 +201,18 @@ export async function getAllTodos(): Promise<Todo[]> {
 export async function getTodayTodos(): Promise<Todo[]> {
   const all = await getAllTodos();
   const today = todayStr();
-  return all.map(t => ({
-    ...t,
-    // recurring: completed only if last_completed === today
-    // one-time: completed if last_completed is set
-    last_completed: t.recurring
-      ? (t.last_completed === today ? t.last_completed : null)
-      : t.last_completed,
-  }));
+  return all
+    .map(t => ({
+      ...t,
+      last_completed: t.recurring
+        ? (t.last_completed === today ? t.last_completed : null)
+        : t.last_completed,
+    }))
+    .filter(t => {
+      if (t.recurring) return true;
+      if (!t.scheduled_time) return true;
+      return t.scheduled_time.startsWith(today);
+    });
 }
 
 export async function addTodo(title: string, recurring: boolean = false, scheduled_time?: string, reminder_advance?: number): Promise<string> {
@@ -234,6 +238,15 @@ export async function uncompleteTodo(id: string): Promise<void> {
 export async function deleteTodo(id: string): Promise<void> {
   const database = await getDB();
   await database.runAsync('DELETE FROM todos WHERE id = ?', [id]);
+}
+
+export async function updateTodo(id: string, updates: Partial<Pick<Todo, 'title' | 'recurring' | 'scheduled_time' | 'reminder_advance'>>): Promise<void> {
+  const database = await getDB();
+  const fields = Object.keys(updates);
+  const values = Object.values(updates);
+  if (fields.length === 0) return;
+  const setClause = fields.map(f => `${f} = ?`).join(', ');
+  await database.runAsync(`UPDATE todos SET ${setClause} WHERE id = ?`, [...values, id]);
 }
 
 export async function findTodoByTitle(title: string): Promise<Todo | null> {
@@ -303,8 +316,17 @@ export async function getReminderInterval(): Promise<number> {
   return val ? parseInt(val, 10) : 1;
 }
 
-export async function setReminderInterval(minutes: number): Promise<void> {
-  await setSetting('reminder_interval', String(minutes));
+export async function setReminderInterval(hours: number): Promise<void> {
+  await setSetting('reminder_interval', String(hours));
+}
+
+export async function getReminderEnabled(): Promise<boolean> {
+  const val = await getSetting('reminder_enabled');
+  return val === '1';
+}
+
+export async function setReminderEnabled(enabled: boolean): Promise<void> {
+  await setSetting('reminder_enabled', enabled ? '1' : '0');
 }
 
 export async function getGranularity(): Promise<number> {

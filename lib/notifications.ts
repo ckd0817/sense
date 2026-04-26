@@ -1,13 +1,13 @@
 import * as Notifications from 'expo-notifications';
-import { getReminderInterval } from './db';
+import { getReminderInterval, getReminderEnabled } from './db';
 
 export function initNotificationHandler() {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
-      shouldShowAlert: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
       shouldPlaySound: true,
       shouldSetBadge: false,
-      android: { priority: Notifications.AndroidNotificationPriority.HIGH },
     }),
   });
 }
@@ -27,22 +27,22 @@ export async function requestNotificationPermission(): Promise<boolean> {
 }
 
 export async function scheduleRecordReminder(): Promise<void> {
-  await cancelReminders();
+  await Notifications.cancelScheduledNotificationAsync('record-reminder');
   const hours = await getReminderInterval();
   const triggerDate = new Date(Date.now() + hours * 3600 * 1000);
   await Notifications.scheduleNotificationAsync({
-    content: { title: '记录一下', body: '记录你的活动和感受', channelId: 'default' },
-    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: triggerDate },
+    content: { title: '记录一下', body: '记录你的活动和感受' },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: triggerDate, channelId: 'default' },
+    identifier: 'record-reminder',
   });
 }
 
 export async function cancelReminders(): Promise<void> {
-  await Notifications.cancelAllScheduledNotificationsAsync();
+  await Notifications.cancelScheduledNotificationAsync('record-reminder');
 }
 
 export async function resetReminderAfterRecord(): Promise<void> {
-  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-  if (scheduled.length > 0) {
+  if (await getReminderEnabled()) {
     await scheduleRecordReminder();
   }
 }
@@ -53,8 +53,8 @@ export async function scheduleTodoReminder(todoId: string, title: string, schedu
   const now = Date.now();
   if (target <= now) return;
   await Notifications.scheduleNotificationAsync({
-    content: { title: '待办提醒', body: title, data: { todoId }, channelId: 'default' },
-    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: new Date(target) },
+    content: { title: '待办提醒', body: title, data: { todoId } },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: new Date(target), channelId: 'default' },
     identifier: `todo-${todoId}`,
   });
 }
