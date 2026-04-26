@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, Modal, ScrollView, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, S, R, F, CategoryIcons } from '../constants/theme';
 import { Record, updateRecord, getCustomCategories } from '../lib/db';
@@ -51,7 +52,7 @@ export default function EditRecordModal({ record, visible, onClose, onSaved }: P
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={s.page}>
+      <SafeAreaView style={s.page} edges={['top']}>
         <View style={s.header}>
           <TouchableOpacity onPress={onClose}><Text style={s.cancelBtn}>取消</Text></TouchableOpacity>
           <Text style={s.title}>编辑活动</Text>
@@ -82,7 +83,7 @@ export default function EditRecordModal({ record, visible, onClose, onSaved }: P
           <Text style={s.label}>在哪</Text>
           <TextInput style={s.input} value={location} onChangeText={setLocation} maxLength={30} placeholder="可选" placeholderTextColor={Colors.hint} />
         </ScrollView>
-      </View>
+      </SafeAreaView>
     </Modal>
   );
 }

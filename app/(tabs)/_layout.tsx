@@ -4,13 +4,15 @@ import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, F, S } from '../../constants/theme';
 import { useRouter, usePathname } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 function CustomTabBar() {
   const router = useRouter();
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
 
   return (
-    <View style={s.bar}>
+    <View style={[s.bar, { paddingBottom: Math.max(insets.bottom, 8), height: 52 + Math.max(insets.bottom, 8) }]}>
       <TouchableOpacity style={s.tabBtn} onPress={() => router.navigate('/')} activeOpacity={0.7}>
         <Ionicons name="today-outline" size={24} color={pathname === '/' ? Colors.primary : Colors.hint} />
         <Text style={[s.tabLabel, pathname === '/' && s.tabLabelActive]}>今天</Text>
@@ -48,8 +50,6 @@ const s = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderTopColor: Colors.divider,
     borderTopWidth: 0.5,
-    height: 80,
-    paddingBottom: 28,
     paddingTop: 8,
     alignItems: 'center',
     justifyContent: 'space-between',

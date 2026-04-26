@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, Modal, ScrollView, Alert, Platform, Switch } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, S, R, F } from '../constants/theme';
 import { Todo, updateTodo } from '../lib/db';
@@ -74,7 +75,7 @@ export default function EditTodoModal({ todo, visible, onClose, onSaved }: Props
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={s.page}>
+      <SafeAreaView style={s.page} edges={['top']}>
         <View style={s.header}>
           <TouchableOpacity onPress={onClose}><Text style={s.cancelBtn}>取消</Text></TouchableOpacity>
           <Text style={s.title}>编辑待办</Text>
@@ -117,7 +118,7 @@ export default function EditTodoModal({ todo, visible, onClose, onSaved }: Props
             </>
           )}
         </ScrollView>
-      </View>
+      </SafeAreaView>
     </Modal>
   );
 }
