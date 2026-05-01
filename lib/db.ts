@@ -199,19 +199,23 @@ export async function getAllTodos(): Promise<Todo[]> {
 }
 
 export async function getTodayTodos(): Promise<Todo[]> {
+  return getTodosByDate(todayStr());
+}
+
+export async function getTodosByDate(date: string): Promise<Todo[]> {
   const all = await getAllTodos();
   const today = todayStr();
   return all
     .map(t => ({
       ...t,
       last_completed: t.recurring
-        ? (t.last_completed === today ? t.last_completed : null)
+        ? (t.last_completed === date ? t.last_completed : null)
         : t.last_completed,
     }))
     .filter(t => {
       if (t.recurring) return true;
-      if (!t.scheduled_time) return true;
-      return t.scheduled_time.startsWith(today);
+      if (!t.scheduled_time) return date === today;
+      return t.scheduled_time.startsWith(date);
     });
 }
 
@@ -400,6 +404,14 @@ export async function addChatMessage(msg: { chat_date: string; role: 'user' | 'a
 export async function clearChatMessages(chatDate: string): Promise<void> {
   const database = await getDB();
   await database.runAsync('DELETE FROM chat_messages WHERE chat_date = ?', [chatDate]);
+}
+
+export async function getChatDates(): Promise<{ chat_date: string; count: number }[]> {
+  const database = await getDB();
+  return database.getAllAsync<{ chat_date: string; count: number }>(
+    'SELECT chat_date, COUNT(*) as count FROM chat_messages WHERE role != ? GROUP BY chat_date ORDER BY chat_date DESC',
+    ['tool']
+  );
 }
 
 // --- Import / Export ---

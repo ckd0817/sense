@@ -3,7 +3,7 @@ import { View, Text, FlatList, StyleSheet, RefreshControl, LayoutAnimation, Touc
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
-import { getTodayRecords, getGranularity, getTodayTodos, Record, Todo } from '../../lib/db';
+import { getRecordsByDate, getGranularity, getTodosByDate, Record, Todo } from '../../lib/db';
 import { Colors, S, R, F } from '../../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 import ActivityBlock from '../../components/ActivityBlock';
@@ -12,6 +12,12 @@ import WeekSchedule from '../../components/WeekSchedule';
 
 function dateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function addDays(d: Date, n: number): Date {
+  const r = new Date(d);
+  r.setDate(r.getDate() + n);
+  return r;
 }
 
 function getMonday(d: Date): Date {
@@ -23,6 +29,8 @@ function getMonday(d: Date): Date {
   return r;
 }
 
+const WEEKDAYS = ['日','一','二','三','四','五','六'];
+
 export default function TodayScreen() {
   const [mode, setMode] = useState<'today' | 'history'>('today');
   const [records, setRecords] = useState<Record[]>([]);
@@ -30,27 +38,28 @@ export default function TodayScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0);
   const [granularity, setGran] = useState(30);
-  const pinchScale = useRef(1);
+  const [selectedDate, setSelectedDate] = useState(dateStr(new Date()));
 
-  const loadToday = useCallback(async () => {
-    const [r, t] = await Promise.all([getTodayRecords(), getTodayTodos()]);
+  const loadDate = useCallback(async (date: string) => {
+    const [r, t] = await Promise.all([getRecordsByDate(date), getTodosByDate(date)]);
     setRecords(r);
     setTodos(t);
   }, []);
 
   useFocusEffect(useCallback(() => {
-    if (mode === 'today') loadToday();
+    if (mode === 'today') loadDate(selectedDate);
     getGranularity().then(g => setGran(g));
-  }, [mode, loadToday]));
+  }, [mode, selectedDate, loadDate]));
 
   const switchTo = (m: 'today' | 'history') => {
     if (m === mode) return;
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setMode(m);
-    if (m === 'today') loadToday();
+    if (m === 'today') loadDate(selectedDate);
   };
 
   // Pinch gesture
+  const pinchScale = useRef(1);
   const pinchGesture = Gesture.Pinch()
     .onEnd((e) => {
       if (e.scale < 0.8 && mode === 'today') {
@@ -63,7 +72,13 @@ export default function TodayScreen() {
     });
 
   const now = new Date();
-  const wd = ['日','一','二','三','四','五','六'];
+  const todayStr_ = dateStr(now);
+  const isToday = selectedDate === todayStr_;
+  const selDate = new Date(selectedDate + 'T00:00:00');
+
+  const goPrev = () => setSelectedDate(dateStr(addDays(selDate, -1)));
+  const goNext = () => setSelectedDate(dateStr(addDays(selDate, 1)));
+  const goToday = () => setSelectedDate(todayStr_);
 
   // Week navigation
   const weekMonday = new Date(getMonday(now));
@@ -77,16 +92,32 @@ export default function TodayScreen() {
   const nextWeek = () => setWeekOffset(o => Math.min(o + 1, 0));
   const thisWeek = () => setWeekOffset(0);
 
+  const dateLabel = `${selDate.getMonth() + 1}月${selDate.getDate()}日`;
+  const weekdayLabel = `周${WEEKDAYS[selDate.getDay()]}`;
+
   return (
     <GestureDetector gesture={pinchGesture}>
       <SafeAreaView style={s.page} edges={['top']}>
         {mode === 'today' ? (
           <>
             <View style={s.header}>
-              <View>
-                <Text style={s.date}>{now.getMonth() + 1}月{now.getDate()}日</Text>
-                <Text style={s.weekday}>周{wd[now.getDay()]}{records.length > 0 ? ` · ${records.length}个活动` : ''}</Text>
+              <View style={s.headerLeft}>
+                <TouchableOpacity style={s.arrowBtn} onPress={goPrev} activeOpacity={0.6}>
+                  <Ionicons name="chevron-back" size={22} color={Colors.primary} />
+                </TouchableOpacity>
+                <View style={s.dateCol}>
+                  <Text style={s.date}>{dateLabel}</Text>
+                  <Text style={s.weekday}>{weekdayLabel}{!isToday ? '' : records.length > 0 ? ` · ${records.length}个活动` : ''}</Text>
+                </View>
+                <TouchableOpacity style={s.arrowBtn} onPress={goNext} activeOpacity={0.6}>
+                  <Ionicons name="chevron-forward" size={22} color={Colors.primary} />
+                </TouchableOpacity>
               </View>
+              {!isToday && (
+                <TouchableOpacity style={s.todayChip} onPress={goToday} activeOpacity={0.7}>
+                  <Text style={s.todayChipText}>今天</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity style={s.headerBtn} onPress={() => switchTo('history')}>
                 <Ionicons name="calendar-outline" size={22} color={Colors.primary} />
               </TouchableOpacity>
@@ -95,11 +126,16 @@ export default function TodayScreen() {
             <FlatList
               data={records}
               keyExtractor={item => item.id}
-              renderItem={({ item }) => <ActivityBlock record={item} onChanged={loadToday} />}
-              ListHeaderComponent={todos.length > 0 ? <TodoSection todos={todos} onChanged={loadToday} /> : null}
-              ListEmptyComponent={<View style={s.empty}><Text style={s.emptyTitle}>新的一天</Text><Text style={s.emptySub}>点击「记录」开始</Text></View>}
+              renderItem={({ item }) => <ActivityBlock record={item} onChanged={() => loadDate(selectedDate)} />}
+              ListHeaderComponent={todos.length > 0 ? <TodoSection todos={todos} onChanged={() => loadDate(selectedDate)} /> : null}
+              ListEmptyComponent={
+                <View style={s.empty}>
+                  <Text style={s.emptyTitle}>{isToday ? '新的一天' : '没有记录'}</Text>
+                  <Text style={s.emptySub}>{isToday ? '点击「记录」开始' : '这天没有活动记录'}</Text>
+                </View>
+              }
               contentContainerStyle={s.list}
-              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadToday(); setRefreshing(false); }} tintColor={Colors.hint} />}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadDate(selectedDate); setRefreshing(false); }} tintColor={Colors.hint} />}
             />
           </>
         ) : (
@@ -132,8 +168,13 @@ export default function TodayScreen() {
 const s = StyleSheet.create({
   page: { flex: 1, backgroundColor: Colors.bg },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: S.lg, paddingTop: S.xl, paddingBottom: S.md },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  dateCol: { alignItems: 'center', marginHorizontal: S.xs },
   date: { fontSize: F.xxl, fontWeight: '600', color: Colors.text, letterSpacing: -0.5 },
   weekday: { fontSize: F.sm, color: Colors.subtext, marginTop: S.xs },
+  arrowBtn: { padding: S.sm },
+  todayChip: { backgroundColor: Colors.primary, paddingHorizontal: S.md, paddingVertical: S.xs, borderRadius: R.xl, marginRight: S.sm },
+  todayChipText: { color: '#fff', fontSize: F.xs, fontWeight: '600' },
   headerBtn: { padding: S.sm },
   list: { paddingHorizontal: S.lg, paddingBottom: S.xxl },
   empty: { flex: 1, justifyContent: 'center', alignItems: 'center' },

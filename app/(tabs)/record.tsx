@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, Keyboard, Platform, Alert, Modal } from 'react-native';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, Alert, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { getChatMessages, addChatMessage, clearChatMessages, getChatDate, ChatMessage } from '../../lib/db';
 import { streamAgent, AgentMessage, StreamEvent } from '../../lib/agent';
 import { Colors, S, R, F } from '../../constants/theme';
@@ -98,22 +99,9 @@ export default function RecordScreen() {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const [kbOffset, setKbOffset] = useState(0);
   const flatRef = useRef<FlatList>(null);
   const chatDateRef = useRef('');
   const historyRef = useRef<AgentMessage[]>([]);
-
-  useEffect(() => {
-    const show = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
-      e => setKbOffset(Math.max(0, e.endCoordinates.height - 68))
-    );
-    const hide = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
-      () => setKbOffset(0)
-    );
-    return () => { show.remove(); hide.remove(); };
-  }, []);
 
   const loadChat = useCallback(async () => {
     const date = getChatDate();
@@ -291,16 +279,23 @@ export default function RecordScreen() {
     </View>
   );
 
+  const router = useRouter();
+
   return (
     <SafeAreaView style={s.page} edges={['top']}>
-      <View style={[s.inner, { paddingBottom: kbOffset }]}>
+      <KeyboardAvoidingView style={s.inner} behavior="padding">
         <View style={s.header}>
           <Text style={s.headerTitle}>对话</Text>
-          {bubbles.length > 0 && (
-            <TouchableOpacity style={s.clearBtn} onPress={handleClear}>
-              <Ionicons name="trash-outline" size={18} color={Colors.hint} />
+          <View style={s.headerRight}>
+            <TouchableOpacity style={s.headerBtn} onPress={() => router.navigate('/history')}>
+              <Ionicons name="time-outline" size={20} color={Colors.hint} />
             </TouchableOpacity>
-          )}
+            {bubbles.length > 0 && (
+              <TouchableOpacity style={s.headerBtn} onPress={handleClear}>
+                <Ionicons name="trash-outline" size={18} color={Colors.hint} />
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         {bubbles.length === 0 ? (
@@ -334,7 +329,7 @@ export default function RecordScreen() {
             {busy ? <Text style={s.sendText}>...</Text> : <Ionicons name="arrow-up" size={20} color="#fff" />}
           </TouchableOpacity>
         </View>
-      </View>
+      </KeyboardAvoidingView>
       <Modal visible={!!detailTool} transparent animationType="fade" onRequestClose={() => setDetailTool(null)}>
         <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => setDetailTool(null)}>
           <View style={s.modalCard} onStartShouldSetResponder={() => true}>
@@ -383,7 +378,8 @@ const s = StyleSheet.create({
     paddingBottom: S.sm,
   },
   headerTitle: { fontSize: F.lg, fontWeight: '600', color: Colors.text },
-  clearBtn: { padding: S.sm },
+  headerRight: { flexDirection: 'row', gap: S.xs },
+  headerBtn: { padding: S.sm },
   list: {
     paddingHorizontal: S.lg,
     paddingBottom: S.lg,
