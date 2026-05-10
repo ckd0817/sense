@@ -1,17 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert, Switch, ScrollView, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert, Switch, ScrollView, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getAISettings, setAISettings, getReminderInterval, setReminderInterval, getGranularity, setGranularity, getSystemPrompt, setSystemPrompt, getReminderEnabled, setReminderEnabled, AISettings, exportAllRecords, importRecords } from '../../lib/db';
+import { getAISettings, setAISettings, getReminderTimes, setReminderTimes, getGranularity, setGranularity, getSystemPrompt, setSystemPrompt, getReminderEnabled, setReminderEnabled, AISettings, exportAllRecords, importRecords } from '../../lib/db';
 import { testConnection } from '../../lib/ai';
 import { DEFAULT_SYSTEM_PROMPT } from '../../lib/agent';
 import { Colors, S, R, F, GRANULARITY_OPTIONS } from '../../constants/theme';
 import { Paths, File, Directory } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 export default function SettingsScreen() {
   const [ai, setAi] = useState<AISettings>({ apiUrl: '', apiKey: '', model: '' });
-  const [interval, setInterval_] = useState(1);
+  const [reminderTimes, setReminderTimes_] = useState<string[]>([]);
   const [gran, setGran] = useState(30);
   const [remindOn, setRemindOn] = useState(true);
   const [showKey, setShowKey] = useState(false);
@@ -19,8 +20,10 @@ export default function SettingsScreen() {
   const [testing, setTesting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [promptText, setPromptText] = useState(DEFAULT_SYSTEM_PROMPT);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [pickerDate, setPickerDate] = useState(new Date());
 
-  useEffect(() => { (async () => { setAi(await getAISettings()); setInterval_(await getReminderInterval()); setGran(await getGranularity()); setRemindOn(await getReminderEnabled()); const sp = await getSystemPrompt(); setPromptText(sp || DEFAULT_SYSTEM_PROMPT); })(); }, []);
+  useEffect(() => { (async () => { setAi(await getAISettings()); setReminderTimes_(await getReminderTimes()); setGran(await getGranularity()); setRemindOn(await getReminderEnabled()); const sp = await getSystemPrompt(); setPromptText(sp || DEFAULT_SYSTEM_PROMPT); })(); }, []);
 
   const save = async () => {
     if (!ai.apiUrl || !ai.apiKey || !ai.model) { Alert.alert('请填写完整'); return; }
@@ -93,7 +96,25 @@ export default function SettingsScreen() {
     await setReminderEnabled(on);
   };
 
-  const changeInterval = async (h: number) => { setInterval_(h); await setReminderInterval(h); if (remindOn) (await import('../../lib/notifications')).scheduleRecordReminder(); };
+  const saveTimes = async (times: string[]) => {
+    const sorted = [...times].sort();
+    setReminderTimes_(sorted);
+    await setReminderTimes(sorted);
+    if (remindOn) (await import('../../lib/notifications')).scheduleRecordReminder();
+  };
+
+  const addTime = (d: Date) => {
+    setShowTimePicker(Platform.OS === 'ios');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const t = `${hh}:${mm}`;
+    if (!reminderTimes.includes(t)) saveTimes([...reminderTimes, t]);
+  };
+
+  const removeTime = (t: string) => {
+    saveTimes(reminderTimes.filter(x => x !== t));
+  };
+
   const changeGran = async (m: number) => { setGran(m); await setGranularity(m); };
 
   return (
@@ -150,13 +171,34 @@ export default function SettingsScreen() {
             <Switch value={remindOn} onValueChange={toggleRemind} trackColor={{ false: Colors.divider, true: Colors.primary }} thumbColor="#FFFFFF" />
           </View>
           {remindOn && (
-            <View style={s.pickerRow}>
-              <TouchableOpacity style={s.stepBtn} onPress={() => changeInterval(Math.max(1, interval - 1))}><Text style={s.stepText}>−</Text></TouchableOpacity>
-              <Text style={s.pickerValue}>{interval} 小时</Text>
-              <TouchableOpacity style={s.stepBtn} onPress={() => changeInterval(interval + 1)}><Text style={s.stepText}>+</Text></TouchableOpacity>
-            </View>
+            <>
+              {reminderTimes.map(t => (
+                <View key={t} style={s.timeRow}>
+                  <Text style={s.timeText}>{t}</Text>
+                  <TouchableOpacity onPress={() => removeTime(t)}>
+                    <Text style={s.timeDel}>删除</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <TouchableOpacity style={s.addTimeBtn} onPress={() => { setPickerDate(new Date()); setShowTimePicker(true); }}>
+                <Text style={s.addTimeText}>+ 添加时间</Text>
+              </TouchableOpacity>
+              {showTimePicker && (
+                <DateTimePicker value={pickerDate} mode="time" display="default" onChange={(_e, d) => { if (d) addTime(d); }} />
+              )}
+            </>
           )}
         </View>
+
+        {remindOn && (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>后台通知</Text>
+            <Text style={s.cardDesc}>如果收不到通知，请点击下方按钮关闭电池优化，允许应用在后台发送提醒。</Text>
+            <TouchableOpacity style={s.outlineBtn} onPress={() => import('../../lib/notifications').then(m => m.requestBatteryOptimization())}>
+              <Text style={s.outlineText}>电池优化设置</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         <View style={s.card}>
           <View style={s.row}>
@@ -209,10 +251,11 @@ const s = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', marginBottom: S.md },
   spacer: { flex: 1 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: S.sm },
-  pickerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: S.lg },
-  stepBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.surfaceAlt, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.divider },
-  stepText: { fontSize: F.lg, color: Colors.primary, fontWeight: '500' },
-  pickerValue: { fontSize: F.md, color: Colors.text, fontWeight: '600', minWidth: 64, textAlign: 'center' },
+  timeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: S.xs },
+  timeText: { fontSize: F.md, color: Colors.text, fontWeight: '500' },
+  timeDel: { fontSize: F.xs, color: Colors.hint },
+  addTimeBtn: { paddingVertical: S.sm, alignItems: 'center' },
+  addTimeText: { fontSize: F.sm, color: Colors.primary, fontWeight: '500' },
   chip: { paddingHorizontal: S.md, paddingVertical: S.sm, borderRadius: R.xl, backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.divider },
   chipOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   chipText: { fontSize: F.sm, color: Colors.subtext },

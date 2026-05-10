@@ -315,13 +315,15 @@ export async function setAISettings(settings: AISettings): Promise<void> {
   await setSetting('ai_model', settings.model);
 }
 
-export async function getReminderInterval(): Promise<number> {
-  const val = await getSetting('reminder_interval');
-  return val ? parseInt(val, 10) : 1;
+const DEFAULT_REMINDER_TIMES = ['09:00', '12:00', '18:00', '21:00'];
+
+export async function getReminderTimes(): Promise<string[]> {
+  const val = await getSetting('reminder_times');
+  return val ? JSON.parse(val) : DEFAULT_REMINDER_TIMES;
 }
 
-export async function setReminderInterval(hours: number): Promise<void> {
-  await setSetting('reminder_interval', String(hours));
+export async function setReminderTimes(times: string[]): Promise<void> {
+  await setSetting('reminder_times', JSON.stringify(times));
 }
 
 export async function getReminderEnabled(): Promise<boolean> {

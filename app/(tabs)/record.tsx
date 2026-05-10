@@ -143,9 +143,6 @@ export default function RecordScreen() {
     setBusy(true);
     setText('');
 
-    // Reset reminder
-    import('../../lib/notifications').then(m => m.resetReminderAfterRecord()).catch(() => {});
-
     // Save user message
     await addChatMessage({ chat_date: chatDateRef.current, role: 'user', content: t });
 
