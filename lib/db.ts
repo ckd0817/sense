@@ -214,8 +214,8 @@ export async function getTodosByDate(date: string): Promise<Todo[]> {
     }))
     .filter(t => {
       if (t.recurring) return true;
-      if (!t.scheduled_time) return date === today;
-      return t.scheduled_time.startsWith(date);
+      if (!t.last_completed) return date === today;
+      return date === t.last_completed;
     });
 }
 
