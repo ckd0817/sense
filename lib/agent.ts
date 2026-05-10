@@ -1,4 +1,4 @@
-import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, completeTodo, uncompleteTodo, findTodoByTitle, insertActivity, getTodayRecords, updateRecord, deleteRecord, getSystemPrompt, Record as ActivityRecord } from './db';
+import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, completeTodo, uncompleteTodo, findTodoByTitle, insertActivity, getTodayRecords, getRecordsByDate, updateRecord, deleteRecord, getSystemPrompt, Record as ActivityRecord } from './db';
 import { scheduleTodoReminder, cancelTodoReminder } from './notifications';
 import { CategoryIcons } from '../constants/theme';
 import { toLocalISO } from './time';
@@ -194,8 +194,8 @@ function formatTime(iso: string): string {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
-function buildSystemPrompt(todos: { title: string; recurring: number; last_completed: string | null; scheduled_time: string | null }[], granularity: number, categories: string[], activities: ActivityRecord[], template: string): string {
-  const now = new Date();
+function buildSystemPrompt(todos: { title: string; recurring: number; last_completed: string | null; scheduled_time: string | null }[], granularity: number, categories: string[], activities: ActivityRecord[], template: string, nowOverride?: Date): string {
+  const now = nowOverride || new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
   const todoList = todos.length > 0
@@ -361,7 +361,7 @@ export interface AgentMessage {
 
 // --- Build context ---
 
-async function buildContext(): Promise<{ systemPrompt: string; url: string; apiKey: string; model: string }> {
+async function buildContext(targetDate?: string): Promise<{ systemPrompt: string; url: string; apiKey: string; model: string }> {
   const settings = await getAISettings();
   if (!settings.apiUrl || !settings.apiKey) throw new Error('请先在设置中配置 AI API');
 
@@ -370,11 +370,18 @@ async function buildContext(): Promise<{ systemPrompt: string; url: string; apiK
   const customCategories = await getCustomCategories();
   const categories = [...defaultCategories, ...customCategories.filter(c => !defaultCategories.includes(c))];
   const todos = await getAllTodos();
-  const activities = await getTodayRecords();
+  const activities = targetDate ? await getRecordsByDate(targetDate) : await getTodayRecords();
   const customPrompt = await getSystemPrompt();
 
+  let nowOverride: Date | undefined;
+  if (targetDate) {
+    const actual = new Date();
+    const [y, m, d] = targetDate.split('-').map(Number);
+    nowOverride = new Date(y, m - 1, d, actual.getHours(), actual.getMinutes(), actual.getSeconds());
+  }
+
   return {
-    systemPrompt: buildSystemPrompt(todos, granularity, categories, activities, customPrompt || DEFAULT_SYSTEM_PROMPT),
+    systemPrompt: buildSystemPrompt(todos, granularity, categories, activities, customPrompt || DEFAULT_SYSTEM_PROMPT, nowOverride),
     url: settings.apiUrl.replace(/\/$/, '') + '/chat/completions',
     apiKey: settings.apiKey,
     model: settings.model,
@@ -449,8 +456,8 @@ function parseSSEChunks(raw: string, prevBuffer: string): { events: string[]; bu
 
 // --- Streaming Agent ---
 
-export async function* streamAgent(history: AgentMessage[]): AsyncGenerator<StreamEvent> {
-  const { systemPrompt, url, apiKey, model } = await buildContext();
+export async function* streamAgent(history: AgentMessage[], targetDate?: string): AsyncGenerator<StreamEvent> {
+  const { systemPrompt, url, apiKey, model } = await buildContext(targetDate);
 
   const messages = [
     { role: 'system' as const, content: systemPrompt },
@@ -536,7 +543,7 @@ export async function* streamAgent(history: AgentMessage[]): AsyncGenerator<Stre
 
 // --- Non-streaming Agent (fallback) ---
 
-export async function runAgent(userText: string): Promise<AgentResult> {
+export async function runAgent(userText: string, targetDate?: string): Promise<AgentResult> {
   const settings = await getAISettings();
   if (!settings.apiUrl || !settings.apiKey) {
     throw new Error('请先在设置中配置 AI API');
@@ -547,10 +554,17 @@ export async function runAgent(userText: string): Promise<AgentResult> {
   const customCategories = await getCustomCategories();
   const categories = [...defaultCategories, ...customCategories.filter(c => !defaultCategories.includes(c))];
   const todos = await getAllTodos();
-  const activities = await getTodayRecords();
+  const activities = targetDate ? await getRecordsByDate(targetDate) : await getTodayRecords();
   const customPrompt = await getSystemPrompt();
 
-  const systemPrompt = buildSystemPrompt(todos, granularity, categories, activities, customPrompt || DEFAULT_SYSTEM_PROMPT);
+  let nowOverride: Date | undefined;
+  if (targetDate) {
+    const actual = new Date();
+    const [y, m, d] = targetDate.split('-').map(Number);
+    nowOverride = new Date(y, m - 1, d, actual.getHours(), actual.getMinutes(), actual.getSeconds());
+  }
+
+  const systemPrompt = buildSystemPrompt(todos, granularity, categories, activities, customPrompt || DEFAULT_SYSTEM_PROMPT, nowOverride);
 
   interface Message {
     role: 'system' | 'user' | 'assistant' | 'tool';

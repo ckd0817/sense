@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, FlatList, StyleSheet, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { getChatDates, getChatMessages, ChatMessage } from '../../lib/db';
 import { Colors, S, R, F } from '../../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,6 +26,7 @@ interface ChatDateInfo {
 }
 
 export default function HistoryScreen() {
+  const router = useRouter();
   const [dates, setDates] = useState<ChatDateInfo[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -101,6 +102,12 @@ export default function HistoryScreen() {
             </View>
           }
         />
+        <View style={s.footer}>
+          <TouchableOpacity style={s.continueBtn} onPress={() => router.navigate({ pathname: '/record', params: { date: selectedDate } })}>
+            <Ionicons name="chatbubble-ellipses-outline" size={18} color={Colors.primary} />
+            <Text style={s.continueText}>继续对话</Text>
+          </TouchableOpacity>
+        </View>
       </SafeAreaView>
     );
   }
@@ -208,4 +215,7 @@ const s = StyleSheet.create({
   toolTagText: { fontSize: F.xs - 1, color: Colors.subtext },
   empty: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: S.md },
   emptyText: { fontSize: F.md, color: Colors.hint },
+  footer: { paddingHorizontal: S.lg, paddingVertical: S.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.divider, backgroundColor: Colors.surface },
+  continueBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: S.xs, paddingVertical: S.md, borderRadius: R.xl, borderWidth: 1, borderColor: Colors.primary },
+  continueText: { fontSize: F.md, fontWeight: '600', color: Colors.primary },
 });

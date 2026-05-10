@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, Alert, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { getChatMessages, addChatMessage, clearChatMessages, getChatDate, ChatMessage } from '../../lib/db';
 import { streamAgent, AgentMessage, StreamEvent } from '../../lib/agent';
 import { Colors, S, R, F } from '../../constants/theme';
@@ -96,6 +96,7 @@ function msgToBubble(m: ChatMessage): Bubble | null {
 }
 
 export default function RecordScreen() {
+  const { date: routeDate } = useLocalSearchParams<{ date?: string }>();
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -103,8 +104,8 @@ export default function RecordScreen() {
   const chatDateRef = useRef('');
   const historyRef = useRef<AgentMessage[]>([]);
 
-  const loadChat = useCallback(async () => {
-    const date = getChatDate();
+  const loadChat = useCallback(async (targetDate?: string) => {
+    const date = targetDate || getChatDate();
     chatDateRef.current = date;
     const msgs = await getChatMessages(date);
     const bubbles: Bubble[] = [];
@@ -131,7 +132,7 @@ export default function RecordScreen() {
     historyRef.current = history;
   }, []);
 
-  useEffect(() => { loadChat(); }, [loadChat]);
+  useEffect(() => { loadChat(routeDate ? String(routeDate) : undefined); }, [loadChat, routeDate]);
 
   const scrollToBottom = () => {
     setTimeout(() => flatRef.current?.scrollToEnd?.({ animated: true }), 50);
@@ -165,7 +166,7 @@ export default function RecordScreen() {
       const pendingArgs = new Map<number, Record<string, unknown>>();
       let toolIdx = 0;
 
-      for await (const event of streamAgent(historyRef.current)) {
+      for await (const event of streamAgent(historyRef.current, chatDateRef.current !== getChatDate() ? chatDateRef.current : undefined)) {
         if (event.type === 'text_delta') {
           fullContent += event.content;
           setBubbles(prev => prev.map(b =>
@@ -208,7 +209,8 @@ export default function RecordScreen() {
   };
 
   const handleClear = () => {
-    Alert.alert('清空对话', '确定清空今天的对话记录？', [
+    const isToday = chatDateRef.current === getChatDate();
+    Alert.alert('清空对话', `确定清空${isToday ? '今天的' : '这段'}对话记录？`, [
       { text: '取消', style: 'cancel' },
       { text: '清空', style: 'destructive', onPress: async () => {
         await clearChatMessages(chatDateRef.current);
@@ -282,7 +284,7 @@ export default function RecordScreen() {
     <SafeAreaView style={s.page} edges={['top']}>
       <KeyboardAvoidingView style={s.inner} behavior="padding">
         <View style={s.header}>
-          <Text style={s.headerTitle}>对话</Text>
+          <Text style={s.headerTitle}>{routeDate && String(routeDate) !== getChatDate() ? (() => { const d = new Date(String(routeDate) + 'T00:00:00'); return `${d.getMonth() + 1}月${d.getDate()}日 对话`; })() : '对话'}</Text>
           <View style={s.headerRight}>
             <TouchableOpacity style={s.headerBtn} onPress={() => router.navigate('/history')}>
               <Ionicons name="time-outline" size={20} color={Colors.hint} />

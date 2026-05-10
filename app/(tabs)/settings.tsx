@@ -85,12 +85,14 @@ export default function SettingsScreen() {
   };
 
   const toggleRemind = async (on: boolean) => {
+    const notif = await import('../../lib/notifications');
     if (on) {
-      const { requestNotificationPermission, scheduleRecordReminder } = await import('../../lib/notifications');
-      if (!(await requestNotificationPermission())) { Alert.alert('需要通知权限'); return; }
-      await scheduleRecordReminder();
+      if (!(await notif.requestNotificationPermission())) { Alert.alert('需要通知权限'); return; }
+      await notif.scheduleRecordReminder();
+      notif.startReminderService();
     } else {
-      (await import('../../lib/notifications')).cancelReminders();
+      await notif.cancelReminders();
+      notif.stopReminderService();
     }
     setRemindOn(on);
     await setReminderEnabled(on);
@@ -114,6 +116,17 @@ export default function SettingsScreen() {
   const removeTime = (t: string) => {
     saveTimes(reminderTimes.filter(x => x !== t));
   };
+
+  const [accessibilityOn, setAccessibilityOn] = useState(false);
+  const [notifOn, setNotifOn] = useState(false);
+
+  const checkStatus = async () => {
+    const notif = await import('../../lib/notifications');
+    setAccessibilityOn(await notif.isReminderServiceEnabled());
+    setNotifOn(await notif.isNotificationPermissionGranted());
+  };
+
+  useEffect(() => { checkStatus(); }, [remindOn]);
 
   const changeGran = async (m: number) => { setGran(m); await setGranularity(m); };
 
@@ -192,11 +205,26 @@ export default function SettingsScreen() {
 
         {remindOn && (
           <View style={s.card}>
-            <Text style={s.cardTitle}>后台通知</Text>
-            <Text style={s.cardDesc}>如果收不到通知，请点击下方按钮关闭电池优化，允许应用在后台发送提醒。</Text>
-            <TouchableOpacity style={s.outlineBtn} onPress={() => import('../../lib/notifications').then(m => m.requestBatteryOptimization())}>
-              <Text style={s.outlineText}>电池优化设置</Text>
+            <Text style={s.cardTitle}>后台提醒</Text>
+            <TouchableOpacity style={s.statusRow} onPress={checkStatus}>
+              <Text style={s.statusLabel}>无障碍服务</Text>
+              <Text style={[s.statusValue, accessibilityOn ? s.statusOn : s.statusOff]}>{accessibilityOn ? '已开启' : '未开启'}</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={s.statusRow} onPress={checkStatus}>
+              <Text style={s.statusLabel}>通知权限</Text>
+              <Text style={[s.statusValue, notifOn ? s.statusOn : s.statusOff]}>{notifOn ? '已开启' : '未开启'}</Text>
+            </TouchableOpacity>
+            <View style={s.btnRow}>
+              <TouchableOpacity style={s.outlineBtn} onPress={() => import('../../lib/notifications').then(m => m.openAccessibilitySettings())}>
+                <Text style={s.outlineText}>无障碍设置</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.outlineBtn} onPress={() => import('../../lib/notifications').then(m => m.openAppSettings())}>
+                <Text style={s.outlineText}>应用设置</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.outlineBtn} onPress={checkStatus}>
+                <Text style={s.outlineText}>重新检测</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
 
@@ -233,6 +261,11 @@ const s = StyleSheet.create({
   card: { backgroundColor: Colors.surface, borderRadius: R.lg, padding: S.lg, marginBottom: S.lg },
   cardTitle: { fontSize: F.md, fontWeight: '600', color: Colors.text, marginBottom: S.xs },
   cardDesc: { fontSize: F.xs, color: Colors.hint, marginBottom: S.md },
+  statusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: S.sm },
+  statusLabel: { fontSize: F.sm, color: Colors.text },
+  statusValue: { fontSize: F.sm, fontWeight: '500' },
+  statusOn: { color: '#4CAF50' },
+  statusOff: { color: Colors.hint },
   label: { fontSize: F.xs, color: Colors.hint, marginBottom: S.xs, fontWeight: '500' as const },
   input: { backgroundColor: Colors.surfaceAlt, borderRadius: R.md, paddingHorizontal: S.md, paddingVertical: S.md, fontSize: F.md, color: Colors.text, marginBottom: S.md, borderWidth: 1, borderColor: Colors.divider },
   keyRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.surfaceAlt, borderRadius: R.md, borderWidth: 1, borderColor: Colors.divider, marginBottom: S.md, paddingRight: S.sm },

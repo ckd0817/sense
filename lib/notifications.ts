@@ -1,8 +1,38 @@
 import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
+import { Platform, NativeModules } from 'react-native';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { getReminderTimes, getReminderEnabled } from './db';
 import Constants from 'expo-constants';
+
+export function startReminderService(): void {
+  // Accessibility service is started by the system when user enables it in settings
+}
+
+export async function openAccessibilitySettings(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  try {
+    await IntentLauncher.startActivityAsync('android.settings.ACCESSIBILITY_SETTINGS');
+  } catch { /* ignore */ }
+}
+
+export async function openAppSettings(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  try {
+    await IntentLauncher.startActivityAsync('android.settings.APPLICATION_DETAILS_SETTINGS', {
+      data: `package:${Constants.expoConfig?.android?.package || 'com.ckd0817.sense'}`,
+    });
+  } catch { /* ignore */ }
+}
+
+export async function isReminderServiceEnabled(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  return NativeModules.ReminderModule.isEnabled();
+}
+
+export async function isNotificationPermissionGranted(): Promise<boolean> {
+  const { status } = await Notifications.getPermissionsAsync();
+  return status === 'granted';
+}
 
 export function initNotificationHandler() {
   Notifications.setNotificationHandler({
