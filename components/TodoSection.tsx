@@ -8,10 +8,11 @@ import EditTodoModal from './EditTodoModal';
 
 interface Props {
   todos: Todo[];
+  currentDate: string;
   onChanged: () => void;
 }
 
-export default function TodoSection({ todos, onChanged }: Props) {
+export default function TodoSection({ todos, currentDate, onChanged }: Props) {
   const [adding, setAdding] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [habitMode, setHabitMode] = useState(false);
@@ -25,7 +26,7 @@ export default function TodoSection({ todos, onChanged }: Props) {
     if (todo.last_completed) {
       await uncompleteTodo(todo.id);
     } else {
-      await completeTodo(todo.id);
+      await completeTodo(todo.id, currentDate);
     }
     onChanged();
   };

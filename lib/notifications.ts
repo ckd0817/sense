@@ -8,6 +8,10 @@ export function startReminderService(): void {
   // Accessibility service is started by the system when user enables it in settings
 }
 
+export function stopReminderService(): void {
+  // Accessibility service is stopped by the system when user disables it in settings
+}
+
 export async function openAccessibilitySettings(): Promise<void> {
   if (Platform.OS !== 'android') return;
   try {

@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, Alert, Modal } from 'react-native';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, Alert, Modal, AppState } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { getChatMessages, addChatMessage, clearChatMessages, getChatDate, ChatMessage } from '../../lib/db';
 import { streamAgent, AgentMessage, StreamEvent } from '../../lib/agent';
 import { Colors, S, R, F } from '../../constants/theme';
@@ -103,6 +103,10 @@ export default function RecordScreen() {
   const flatRef = useRef<FlatList>(null);
   const chatDateRef = useRef('');
   const historyRef = useRef<AgentMessage[]>([]);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const routeDateRef = useRef(routeDate);
+  routeDateRef.current = routeDate;
 
   const loadChat = useCallback(async (targetDate?: string) => {
     const date = targetDate || getChatDate();
@@ -132,7 +136,30 @@ export default function RecordScreen() {
     historyRef.current = history;
   }, []);
 
-  useEffect(() => { loadChat(routeDate ? String(routeDate) : undefined); }, [loadChat, routeDate]);
+  useFocusEffect(useCallback(() => {
+    loadChat(routeDate ? String(routeDate) : undefined);
+  }, [loadChat, routeDate]));
+
+  useEffect(() => {
+    const syncChatDate = () => {
+      if (routeDateRef.current || busyRef.current) return;
+      const currentDate = getChatDate();
+      if (chatDateRef.current && chatDateRef.current !== currentDate) {
+        loadChat(currentDate);
+      }
+    };
+
+    const interval = setInterval(syncChatDate, 60 * 1000);
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') syncChatDate();
+    });
+
+    syncChatDate();
+    return () => {
+      clearInterval(interval);
+      subscription.remove();
+    };
+  }, [loadChat]);
 
   const scrollToBottom = () => {
     setTimeout(() => flatRef.current?.scrollToEnd?.({ animated: true }), 50);
@@ -143,6 +170,10 @@ export default function RecordScreen() {
     if (!t || busy) return;
     setBusy(true);
     setText('');
+
+    if (!routeDate && chatDateRef.current !== getChatDate()) {
+      await loadChat();
+    }
 
     // Save user message
     await addChatMessage({ chat_date: chatDateRef.current, role: 'user', content: t });

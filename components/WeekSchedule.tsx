@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, LayoutAnimation } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, LayoutAnimation, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, S, R, F, HOUR_HEIGHT, CategoryIcons, CategoryColors } from '../constants/theme';
 import { Record, getRecordsByDateRange } from '../lib/db';
@@ -10,7 +10,7 @@ const START_HOUR = 6;
 const END_HOUR = 24;
 const HOURS = END_HOUR - START_HOUR;
 const TIME_LABEL_W = 36;
-const DAY_COL_W = 90;
+const MIN_DAY_COL_W = 108;
 
 interface Props {
   weekStart: Date;
@@ -34,6 +34,8 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
   const [records, setRecords] = useState<Record[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const hScrollRef = useRef<ScrollView>(null);
+  const { width } = useWindowDimensions();
+  const dayColWidth = Math.max(MIN_DAY_COL_W, Math.floor((width - TIME_LABEL_W) / 3.25));
 
   const monday = getMonday(initialMonday);
   const days: Date[] = [];
@@ -58,10 +60,10 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
     const todayIndex = days.findIndex(d => dateStr(d) === todayKey);
     if (todayIndex >= 0 && hScrollRef.current) {
       setTimeout(() => {
-        hScrollRef.current?.scrollTo({ x: todayIndex * DAY_COL_W, animated: true });
+        hScrollRef.current?.scrollTo({ x: todayIndex * dayColWidth, animated: true });
       }, 100);
     }
-  }, [monday.getTime()]);
+  }, [monday.getTime(), dayColWidth]);
 
   // Group records by date
   const byDate: { [key: string]: Record[] } = {};
@@ -97,17 +99,20 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
     const height = durationHours * HOUR_HEIGHT;
     const bg = CategoryColors[rec.category] || CategoryColors['其他'];
     const isOpen = expanded === rec.id;
+    const blockHeight = Math.max(height, slotHeight);
+    const compact = blockHeight < 24;
+    const titleLines = blockHeight >= 72 ? 3 : blockHeight >= 42 ? 2 : 1;
 
     if (startOffset < 0 || startOffset >= HOURS) return null;
 
     return (
       <TouchableOpacity
         key={rec.id}
-        style={[s.block, { top, height: Math.max(height, slotHeight), backgroundColor: bg }]}
+        style={[s.block, compact && s.blockCompact, { top, height: blockHeight, backgroundColor: bg }]}
         onPress={() => toggleExpand(rec.id)}
         activeOpacity={0.7}
       >
-        <Text style={s.blockLabel} numberOfLines={1}>{rec.activity}</Text>
+        <Text style={[s.blockLabel, compact && s.blockLabelCompact]} numberOfLines={titleLines}>{rec.activity}</Text>
         {isOpen && (
           <View style={s.blockDetail}>
             {rec.details ? <Text style={s.blockDetailText} numberOfLines={3}>{rec.details}</Text> : null}
@@ -118,7 +123,7 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
     );
   };
 
-  const contentWidth = TIME_LABEL_W + DAY_COL_W * 7;
+  const contentWidth = TIME_LABEL_W + dayColWidth * 7;
 
   return (
     <View style={s.wrap}>
@@ -131,9 +136,11 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
               const ds = dateStr(d);
               const isToday = ds === todayStr;
               return (
-                <View key={ds} style={[s.headerCell, isToday && s.headerCellToday]}>
-                  <Text style={[s.headerWd, isToday && s.headerWdToday]}>{WDS[i]}</Text>
-                  <Text style={[s.headerDay, isToday && s.headerDayToday]}>{d.getDate()}</Text>
+                <View key={ds} style={[s.headerCell, { width: dayColWidth }]}>
+                  <View style={[s.headerPill, isToday && s.headerPillToday]}>
+                    <Text style={[s.headerWd, isToday && s.headerWdToday]}>{WDS[i]}</Text>
+                    <Text style={[s.headerDay, isToday && s.headerDayToday]}>{d.getDate()}</Text>
+                  </View>
                 </View>
               );
             })}
@@ -166,7 +173,7 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
                   }
 
                   return (
-                    <View key={ds} style={[s.dayCol, isToday && s.dayColToday]}>
+                    <View key={ds} style={[s.dayCol, { width: dayColWidth }, isToday && s.dayColToday]}>
                       {slots.map((si) => {
                         const isHourLine = si % slotsPerHour === slotsPerHour - 1;
                         return <View key={si} style={[s.slotCell, { height: slotHeight }, isHourLine && s.hourLine]} />;
@@ -188,31 +195,40 @@ const s = StyleSheet.create({
   wrap: { flex: 1 },
   headerRow: { flexDirection: 'row', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.divider, paddingBottom: S.sm },
   timeLabelCol: { width: TIME_LABEL_W },
-  headerCell: { width: DAY_COL_W, alignItems: 'center', paddingVertical: S.xs },
-  headerCellToday: { backgroundColor: Colors.primary, borderRadius: R.sm, marginHorizontal: 2 },
-  headerWd: { fontSize: 10, color: Colors.hint },
+  headerCell: { alignItems: 'stretch', paddingVertical: S.xs, paddingHorizontal: 3 },
+  headerPill: { minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: R.sm },
+  headerPillToday: { backgroundColor: Colors.primary },
+  headerWd: { fontSize: 11, color: Colors.hint, includeFontPadding: false },
   headerWdToday: { color: 'rgba(255,255,255,0.8)' },
-  headerDay: { fontSize: F.sm, fontWeight: '600', color: Colors.subtext, marginTop: 1 },
+  headerDay: { fontSize: F.md, fontWeight: '600', color: Colors.subtext, marginTop: 3, includeFontPadding: false },
   headerDayToday: { color: '#FFFFFF' },
   gridScroll: { flex: 1 },
   grid: { flexDirection: 'row' },
   timeLabel: { fontSize: 9, color: Colors.hint, marginTop: -6, textAlign: 'right', paddingRight: S.xs },
   daysRow: { flexDirection: 'row', flex: 1 },
-  dayCol: { width: DAY_COL_W, borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: Colors.divider, position: 'relative' },
+  dayCol: { borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: Colors.divider, position: 'relative' },
   dayColToday: { backgroundColor: 'rgba(0,113,227,0.03)' },
   slotCell: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(210,210,215,0.4)' },
   hourLine: { borderBottomColor: Colors.divider },
   block: {
     position: 'absolute',
-    left: 3,
-    right: 3,
+    left: 4,
+    right: 4,
     borderRadius: R.sm,
-    padding: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 5,
     overflow: 'hidden',
+    justifyContent: 'flex-start',
   },
-  blockLabel: { fontSize: 11, fontWeight: '600', color: Colors.text, lineHeight: 14 },
+  blockCompact: {
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    justifyContent: 'center',
+  },
+  blockLabel: { fontSize: 12, fontWeight: '600', color: Colors.text, lineHeight: 16, includeFontPadding: false },
+  blockLabelCompact: { fontSize: 10, lineHeight: 12 },
   blockDetail: { marginTop: 2, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.divider, paddingTop: 2 },
-  blockDetailText: { fontSize: 9, color: Colors.text, lineHeight: 12 },
-  blockMeta: { fontSize: 9, color: Colors.subtext, marginLeft: 2 },
+  blockDetailText: { fontSize: 10, color: Colors.text, lineHeight: 13, includeFontPadding: false },
+  blockMeta: { fontSize: 10, color: Colors.subtext, marginLeft: 2, includeFontPadding: false },
   blockMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 1 },
 });

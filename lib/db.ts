@@ -229,9 +229,9 @@ export async function addTodo(title: string, recurring: boolean = false, schedul
   return id;
 }
 
-export async function completeTodo(id: string): Promise<void> {
+export async function completeTodo(id: string, date?: string): Promise<void> {
   const database = await getDB();
-  await database.runAsync('UPDATE todos SET last_completed = ? WHERE id = ?', [todayStr(), id]);
+  await database.runAsync('UPDATE todos SET last_completed = ? WHERE id = ?', [date ?? todayStr(), id]);
 }
 
 export async function uncompleteTodo(id: string): Promise<void> {

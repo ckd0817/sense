@@ -1,5 +1,5 @@
-import React, { useState, useCallback, useRef } from 'react';
-import { View, Text, FlatList, StyleSheet, RefreshControl, LayoutAnimation, TouchableOpacity } from 'react-native';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { View, Text, FlatList, StyleSheet, RefreshControl, LayoutAnimation, TouchableOpacity, AppState } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
@@ -40,6 +40,11 @@ export default function TodayScreen() {
   const [granularity, setGran] = useState(30);
   const [selectedDate, setSelectedDate] = useState(dateStr(new Date()));
 
+  const selectedDateRef = useRef(selectedDate);
+  selectedDateRef.current = selectedDate;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+
   const loadDate = useCallback(async (date: string) => {
     const [r, t] = await Promise.all([getRecordsByDate(date), getTodosByDate(date)]);
     setRecords(r);
@@ -47,9 +52,35 @@ export default function TodayScreen() {
   }, []);
 
   useFocusEffect(useCallback(() => {
-    if (mode === 'today') loadDate(selectedDate);
+    if (mode === 'today') {
+      loadDate(selectedDateRef.current);
+    }
     getGranularity().then(g => setGran(g));
-  }, [mode, selectedDate, loadDate]));
+  }, [mode, loadDate]));
+
+  useEffect(() => {
+    loadDate(selectedDate);
+  }, [selectedDate, loadDate]);
+
+  useEffect(() => {
+    const syncToday = () => {
+      const today = dateStr(new Date());
+      if (modeRef.current === 'today' && selectedDateRef.current !== today) {
+        setSelectedDate(today);
+      }
+    };
+
+    const interval = setInterval(syncToday, 60 * 1000);
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') syncToday();
+    });
+
+    syncToday();
+    return () => {
+      clearInterval(interval);
+      subscription.remove();
+    };
+  }, []);
 
   const switchTo = (m: 'today' | 'history') => {
     if (m === mode) return;
@@ -127,7 +158,7 @@ export default function TodayScreen() {
               data={records}
               keyExtractor={item => item.id}
               renderItem={({ item }) => <ActivityBlock record={item} onChanged={() => loadDate(selectedDate)} />}
-              ListHeaderComponent={todos.length > 0 ? <TodoSection todos={todos} onChanged={() => loadDate(selectedDate)} /> : null}
+              ListHeaderComponent={todos.length > 0 ? <TodoSection todos={todos} currentDate={selectedDate} onChanged={() => loadDate(selectedDate)} /> : null}
               ListEmptyComponent={
                 <View style={s.empty}>
                   <Text style={s.emptyTitle}>{isToday ? '新的一天' : '没有记录'}</Text>
