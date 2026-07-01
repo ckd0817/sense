@@ -79,6 +79,9 @@ interface Bubble {
   id: string;
   role: 'user' | 'assistant';
   text: string;
+  reasoning?: string;
+  status?: string;
+  thinkingOpen?: boolean;
   tools: ToolInfo[];
   streaming?: boolean;
 }
@@ -92,7 +95,14 @@ function msgToBubble(m: ChatMessage): Bubble | null {
       tools = tcs.map((tc: any) => ({ name: tc.function?.name || tc.name || '?', success: true }));
     } catch { /* ignore */ }
   }
-  return { id: m.id, role: m.role, text: m.content || '', tools };
+  return {
+    id: m.id,
+    role: m.role,
+    text: m.content || '',
+    reasoning: m.reasoning || '',
+    thinkingOpen: false,
+    tools,
+  };
 }
 
 export default function RecordScreen() {
@@ -187,12 +197,23 @@ export default function RecordScreen() {
 
     // Create placeholder assistant bubble
     const asstId = `asst-${Date.now()}`;
-    const asstBubble: Bubble = { id: asstId, role: 'assistant', text: '', tools: [], streaming: true };
+    const asstBubble: Bubble = {
+      id: asstId,
+      role: 'assistant',
+      text: '',
+      reasoning: '',
+      status: '正在连接模型...',
+      thinkingOpen: true,
+      tools: [],
+      streaming: true,
+    };
     setBubbles(prev => [...prev, asstBubble]);
     scrollToBottom();
 
     try {
       let fullContent = '';
+      let reasoningContent = '';
+      let statusText = '正在连接模型...';
       const toolResults: { name: string; success: boolean }[] = [];
       const pendingArgs = new Map<number, Record<string, unknown>>();
       let toolIdx = 0;
@@ -203,18 +224,35 @@ export default function RecordScreen() {
           setBubbles(prev => prev.map(b =>
             b.id === asstId ? { ...b, text: fullContent } : b
           ));
+        } else if (event.type === 'reasoning_delta') {
+          reasoningContent += event.content;
+          setBubbles(prev => prev.map(b =>
+            b.id === asstId ? { ...b, reasoning: reasoningContent, thinkingOpen: true } : b
+          ));
+        } else if (event.type === 'status') {
+          statusText = event.content;
+          setBubbles(prev => prev.map(b =>
+            b.id === asstId ? { ...b, status: statusText } : b
+          ));
         } else if (event.type === 'tool_call') {
           pendingArgs.set(toolIdx, event.args);
+          statusText = `正在执行：${toolLabel[event.name] || event.name}`;
+          setBubbles(prev => prev.map(b =>
+            b.id === asstId ? { ...b, status: statusText, thinkingOpen: true } : b
+          ));
         } else if (event.type === 'tool_result') {
           const args = pendingArgs.get(toolIdx);
           toolIdx++;
           toolResults.push({ name: event.name, success: event.result.success });
+          statusText = event.result.success
+            ? `已完成：${toolLabel[event.name] || event.name}`
+            : `执行失败：${toolLabel[event.name] || event.name}`;
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, tools: [...b.tools, { name: event.name, success: event.result.success, args }] } : b
+            b.id === asstId ? { ...b, status: statusText, tools: [...b.tools, { name: event.name, success: event.result.success, args }] } : b
           ));
         } else if (event.type === 'done') {
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, streaming: false } : b
+            b.id === asstId ? { ...b, status: '处理完成', streaming: false } : b
           ));
         }
       }
@@ -223,7 +261,7 @@ export default function RecordScreen() {
       const toolCallsJson = toolResults.length > 0 ? JSON.stringify(toolResults.map(tr => ({
         function: { name: tr.name }
       }))) : null;
-      await addChatMessage({ chat_date: chatDateRef.current, role: 'assistant', content: fullContent, tool_calls: toolCallsJson });
+      await addChatMessage({ chat_date: chatDateRef.current, role: 'assistant', content: fullContent, reasoning: reasoningContent, tool_calls: toolCallsJson });
 
       // Update history
       const asstMsg: AgentMessage = { role: 'assistant', content: fullContent || undefined };
@@ -287,8 +325,36 @@ export default function RecordScreen() {
 
   const [detailTool, setDetailTool] = useState<ToolInfo | null>(null);
 
+  const toggleThinking = (id: string) => {
+    setBubbles(prev => prev.map(b => b.id === id ? { ...b, thinkingOpen: !b.thinkingOpen } : b));
+  };
+
+  const renderThinking = (item: Bubble) => {
+    if (item.role !== 'assistant') return null;
+    if (!item.reasoning && !item.status && !item.streaming) return null;
+    const title = item.streaming ? '思考中' : '思考';
+    const preview = item.status || (item.reasoning ? '已生成思考内容' : '等待模型返回');
+    return (
+      <View style={s.thinkingBox}>
+        <TouchableOpacity style={s.thinkingHead} onPress={() => toggleThinking(item.id)} activeOpacity={0.7}>
+          <Ionicons name={item.thinkingOpen ? 'chevron-down' : 'chevron-forward'} size={14} color={Colors.hint} />
+          <Text style={s.thinkingTitle}>{title}</Text>
+          <Text style={s.thinkingPreview} numberOfLines={1}>{preview}</Text>
+        </TouchableOpacity>
+        {item.thinkingOpen && (
+          <View style={s.thinkingBody}>
+            {item.reasoning ? <Text style={s.thinkingText}>{item.reasoning}</Text> : null}
+            {item.status ? <Text style={s.statusText}>{item.status}</Text> : null}
+            {item.streaming && !item.reasoning ? <View style={s.thinkingCursor} /> : null}
+          </View>
+        )}
+      </View>
+    );
+  };
+
   const renderItem = ({ item }: { item: Bubble }) => (
     <View style={[s.bubble, item.role === 'user' ? s.bubbleUser : s.bubbleAsst]}>
+      {renderThinking(item)}
       {item.text ? (
         item.role === 'user' ? (
           <Text style={[s.bubbleText, s.bubbleTextUser]}>{item.text}</Text>
@@ -305,7 +371,7 @@ export default function RecordScreen() {
           ))}
         </View>
       )}
-      {item.streaming && !item.text && <View style={s.cursor} />}
+      {item.streaming && !item.text && !item.reasoning && <View style={s.cursor} />}
     </View>
   );
 
@@ -446,6 +512,55 @@ const s = StyleSheet.create({
   },
   bubbleTextUser: {
     color: '#fff',
+  },
+  thinkingBox: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.divider,
+    borderRadius: R.md,
+    overflow: 'hidden',
+    marginBottom: S.sm,
+    backgroundColor: Colors.surfaceAlt,
+  },
+  thinkingHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.xs,
+    paddingHorizontal: S.sm,
+    paddingVertical: S.xs,
+  },
+  thinkingTitle: {
+    fontSize: F.xs,
+    fontWeight: '600',
+    color: Colors.subtext,
+    flexShrink: 0,
+  },
+  thinkingPreview: {
+    flex: 1,
+    fontSize: F.xs,
+    color: Colors.hint,
+  },
+  thinkingBody: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.divider,
+    paddingHorizontal: S.sm,
+    paddingVertical: S.xs,
+    gap: S.xs,
+  },
+  thinkingText: {
+    fontSize: F.xs,
+    color: Colors.subtext,
+    lineHeight: 17,
+  },
+  statusText: {
+    fontSize: F.xs,
+    color: Colors.hint,
+  },
+  thinkingCursor: {
+    width: 36,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: Colors.primary,
+    opacity: 0.5,
   },
   toolRow: {
     flexDirection: 'row',

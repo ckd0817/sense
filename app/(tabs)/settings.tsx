@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert, Switch, ScrollView, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getAISettings, setAISettings, getReminderTimes, setReminderTimes, getGranularity, setGranularity, getSystemPrompt, setSystemPrompt, getReminderEnabled, setReminderEnabled, AISettings, exportAllRecords, importRecords } from '../../lib/db';
+import { getAISettings, setAISettings, getReminderTimes, setReminderTimes, getSystemPrompt, setSystemPrompt, getReminderEnabled, setReminderEnabled, AISettings, exportAllRecords, importRecords } from '../../lib/db';
 import { testConnection } from '../../lib/ai';
 import { DEFAULT_SYSTEM_PROMPT } from '../../lib/agent';
-import { Colors, S, R, F, GRANULARITY_OPTIONS } from '../../constants/theme';
+import { Colors, S, R, F } from '../../constants/theme';
 import { Paths, File, Directory } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
@@ -13,7 +13,6 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 export default function SettingsScreen() {
   const [ai, setAi] = useState<AISettings>({ apiUrl: '', apiKey: '', model: '' });
   const [reminderTimes, setReminderTimes_] = useState<string[]>([]);
-  const [gran, setGran] = useState(30);
   const [remindOn, setRemindOn] = useState(true);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -23,7 +22,7 @@ export default function SettingsScreen() {
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [pickerDate, setPickerDate] = useState(new Date());
 
-  useEffect(() => { (async () => { setAi(await getAISettings()); setReminderTimes_(await getReminderTimes()); setGran(await getGranularity()); setRemindOn(await getReminderEnabled()); const sp = await getSystemPrompt(); setPromptText(sp || DEFAULT_SYSTEM_PROMPT); })(); }, []);
+  useEffect(() => { (async () => { setAi(await getAISettings()); setReminderTimes_(await getReminderTimes()); setRemindOn(await getReminderEnabled()); const sp = await getSystemPrompt(); setPromptText(sp || DEFAULT_SYSTEM_PROMPT); })(); }, []);
 
   const save = async () => {
     if (!ai.apiUrl || !ai.apiKey || !ai.model) { Alert.alert('请填写完整'); return; }
@@ -128,8 +127,6 @@ export default function SettingsScreen() {
 
   useEffect(() => { checkStatus(); }, [remindOn]);
 
-  const changeGran = async (m: number) => { setGran(m); await setGranularity(m); };
-
   return (
     <SafeAreaView style={s.page} edges={['top']}>
       <ScrollView style={s.scroll} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
@@ -151,17 +148,6 @@ export default function SettingsScreen() {
               {testing ? <ActivityIndicator size="small" color={Colors.primary} /> : <Text style={s.testText}>测试连接</Text>}
             </TouchableOpacity>
             <TouchableOpacity style={[s.saveBtn, saving && s.saveOff]} onPress={save} disabled={saving}><Text style={s.saveText}>{saving ? '...' : '保存'}</Text></TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={s.card}>
-          <Text style={s.cardTitle}>时间粒度</Text>
-          <View style={s.chips}>
-            {GRANULARITY_OPTIONS.map(o => (
-              <TouchableOpacity key={o.value} style={[s.chip, gran === o.value && s.chipOn]} onPress={() => changeGran(o.value)}>
-                <Text style={[s.chipText, gran === o.value && s.chipTextOn]}>{o.label}</Text>
-              </TouchableOpacity>
-            ))}
           </View>
         </View>
 

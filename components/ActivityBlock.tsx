@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, S, R, F, CategoryIcons, CategoryColors } from '../constants/theme';
-import { Record, deleteRecord } from '../lib/db';
+import { Record, deleteRecord, rejectPredictionRecord } from '../lib/db';
 import EditRecordModal from './EditRecordModal';
 
 interface Props {
@@ -25,9 +25,20 @@ export default function ActivityBlock({ record, onChanged }: Props) {
   const timeRange = record.end_time
     ? `${fmtTime(record.start_time)} – ${fmtTime(record.end_time)}`
     : `${fmtTime(record.start_time)} – 现在`;
+  const isPendingPrediction = record.source === 'prediction' && record.prediction_status === 'pending';
 
   const handleDelete = () => {
     swipeRef.current?.close();
+    if (isPendingPrediction) {
+      Alert.alert('拒绝预测', `确定拒绝「${record.activity}」这条预测？`, [
+        { text: '取消', style: 'cancel' },
+        { text: '拒绝', style: 'destructive', onPress: async () => {
+          await rejectPredictionRecord(record.id);
+          onChanged();
+        }},
+      ]);
+      return;
+    }
     Alert.alert('删除活动', `确定删除「${record.activity}」？`, [
       { text: '取消', style: 'cancel' },
       { text: '删除', style: 'destructive', onPress: async () => {
@@ -49,8 +60,8 @@ export default function ActivityBlock({ record, onChanged }: Props) {
         <Text style={s.swipeBtnText}>编辑</Text>
       </TouchableOpacity>
       <TouchableOpacity style={s.swipeDelBtn} onPress={handleDelete}>
-        <Ionicons name="trash-outline" size={20} color="#fff" />
-        <Text style={s.swipeBtnText}>删除</Text>
+        <Ionicons name={isPendingPrediction ? 'close-outline' : 'trash-outline'} size={20} color="#fff" />
+        <Text style={s.swipeBtnText}>{isPendingPrediction ? '拒绝' : '删除'}</Text>
       </TouchableOpacity>
     </View>
   );
@@ -75,6 +86,12 @@ export default function ActivityBlock({ record, onChanged }: Props) {
           <View style={s.catWrap}>
             <Text style={s.cat}>{record.category}</Text>
           </View>
+          {isPendingPrediction && (
+            <View style={s.predictionWrap}>
+              <Ionicons name="sparkles-outline" size={11} color={Colors.primary} />
+              <Text style={s.predictionText}>预测</Text>
+            </View>
+          )}
         </View>
       </Swipeable>
       <EditRecordModal
@@ -154,4 +171,17 @@ const s = StyleSheet.create({
     paddingVertical: 2,
   },
   cat: { fontSize: F.xs, color: Colors.subtext },
+  predictionWrap: {
+    position: 'absolute',
+    right: S.md,
+    bottom: S.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(0,113,227,0.08)',
+    borderRadius: R.sm,
+    paddingHorizontal: S.xs + 2,
+    paddingVertical: 2,
+  },
+  predictionText: { fontSize: F.xs - 1, color: Colors.primary, fontWeight: '600' },
 });

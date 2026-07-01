@@ -1,4 +1,4 @@
-import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, completeTodo, uncompleteTodo, findTodoByTitle, insertActivity, getTodayRecords, getRecordsByDate, updateRecord, deleteRecord, getSystemPrompt, Record as ActivityRecord } from './db';
+import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, updateTodo, completeTodo, uncompleteTodo, findTodoByTitle, insertActivity, getTodayRecords, getRecordsByDate, updateRecord, deleteRecord, getSystemPrompt, Record as ActivityRecord } from './db';
 import { scheduleTodoReminder, cancelTodoReminder } from './notifications';
 import { CategoryIcons } from '../constants/theme';
 import { toLocalISO } from './time';
@@ -85,7 +85,8 @@ const tools = [
         type: 'object',
         properties: {
           activity: { type: 'string', description: '活动名称（模糊匹配）' },
-          start_time: { type: 'string', description: '限定匹配的开始时间范围，不要带时区和Z，可选' },
+          match_start_time: { type: 'string', description: '用于定位原记录的原开始时间，格式如 2026-04-25T17:30:00，不要带时区和Z，可选' },
+          start_time: { type: 'string', description: '新的开始时间，格式如 2026-04-25T17:30:00，不要带时区和Z，可选' },
           end_time: { type: 'string', description: '新的结束时间，格式如 2026-04-25T18:00:00，不要带时区和Z' },
           category: { type: 'string', description: '新的分类' },
           details: { type: 'string', description: '新的活动细节' },
@@ -160,9 +161,11 @@ export const DEFAULT_SYSTEM_PROMPT = `你是一个日程管理和记录助手。
 如果该活动恰好匹配某个未完成的待办 → 同时调用 update_todo(title="...", completed=true)。
 用户继续做同一件事（连续同类活动）→ 调用 update_activity 合并，延长 end_time。
 用户补充或修正已有活动信息 → 调用 update_activity。
+如果用户描述的是对今天已有活动、预测活动或同一时间段活动的修正 → 优先调用 update_activity，不要新建重复活动。
 
 ### 修改/删除活动
 - "刚才的课延长到5点" → update_activity(activity="上课", end_time="...")
+- "把通勤改成9:30到10点" → update_activity(activity="通勤", start_time="...", end_time="...")
 - "中午吃的是火锅" → update_activity(activity="午餐", details="火锅")
 - "3-4点的课删了" → delete_activity(activity="上课")
 
@@ -187,6 +190,8 @@ export const DEFAULT_SYSTEM_PROMPT = `你是一个日程管理和记录助手。
 - 只提取用户明确提到的信息，不要编造，如果有不清楚的地方可以询问用户
 - 对于 create_activity 的 category，优先从可用分类中选择
 - 如果没有合适的分类，可以自创分类名（简洁两字词），新分类会自动保存供后续复用
+- update_activity 的 start_time 表示要保存的新开始时间；如果只是为了定位原记录，使用 match_start_time
+- 同一个时间段只能有一个活动；如果新活动时间段和已有活动重叠，后来的真实活动会覆盖前面的活动
 - create_todo 如果用户指定了 scheduled_time 但没有指定提前提醒时间，默认设置 reminder_advance=10（分钟）`;
 
 function formatTime(iso: string): string {
@@ -232,14 +237,28 @@ function buildSystemPrompt(todos: { title: string; recurring: number; last_compl
 
 // --- Activity matching helper ---
 
-async function findTodayActivity(name: string, startTime?: string): Promise<{ id: string; activity: string } | null> {
+async function findTodayActivity(name: string, timeHint?: string): Promise<{ id: string; activity: string } | null> {
   const records = await getTodayRecords();
   const lower = name.toLowerCase();
-  const candidates = startTime
-    ? records.filter(r => r.start_time.startsWith(startTime.slice(0, 10)))
+  const candidates = timeHint
+    ? records.filter(r => r.start_time.startsWith(timeHint.slice(0, 10)))
     : records;
-  const match = candidates.find(r => r.activity.toLowerCase() === lower)
-    ?? candidates.find(r => r.activity.toLowerCase().includes(lower) || lower.includes(r.activity.toLowerCase()));
+  const nameMatches = candidates.filter(r => r.activity.toLowerCase() === lower);
+  const fuzzyMatches = candidates.filter(r => r.activity.toLowerCase().includes(lower) || lower.includes(r.activity.toLowerCase()));
+  const matches = nameMatches.length > 0 ? nameMatches : fuzzyMatches;
+  if (matches.length === 0) return null;
+
+  const hintTime = timeHint ? new Date(timeHint).getTime() : NaN;
+  const match = Number.isNaN(hintTime)
+    ? matches[0]
+    : matches
+        .map(r => {
+          const start = new Date(r.start_time).getTime();
+          const end = r.end_time ? new Date(r.end_time).getTime() : start;
+          const overlaps = start <= hintTime && hintTime <= end;
+          return { record: r, distance: overlaps ? 0 : Math.abs(start - hintTime) };
+        })
+        .sort((a, b) => a.distance - b.distance)[0].record;
   return match ? { id: match.id, activity: match.activity } : null;
 }
 
@@ -300,7 +319,18 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
           await uncompleteTodo(todo.id);
           return { success: true };
         }
-        return { success: true, message: '没有需要更新的字段' };
+        const updates: Parameters<typeof updateTodo>[1] = {};
+        if (args.new_title !== undefined) updates.title = args.new_title as string;
+        if (args.scheduled_time !== undefined) updates.scheduled_time = args.scheduled_time as string;
+        if (args.reminder_advance !== undefined) updates.reminder_advance = args.reminder_advance as number;
+        if (Object.keys(updates).length === 0) return { success: true, message: '没有需要更新的字段' };
+        await updateTodo(todo.id, updates);
+        await cancelTodoReminder(todo.id);
+        if (updates.scheduled_time) {
+          const advance = updates.reminder_advance ?? todo.reminder_advance ?? 10;
+          await scheduleTodoReminder(todo.id, updates.title ?? todo.title, updates.scheduled_time, advance);
+        }
+        return { success: true, id: todo.id };
       }
       case 'delete_todo': {
         const todo = await findTodoByTitle(args.title as string);
@@ -311,10 +341,13 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         return { success: true, id: todo.id };
       }
       case 'update_activity': {
-        const found = await findTodayActivity(args.activity as string, args.start_time as string | undefined);
+        const found = await findTodayActivity(
+          args.activity as string,
+          (args.match_start_time as string | undefined) || (args.start_time as string | undefined),
+        );
         if (!found) return { success: false, message: `未找到活动「${args.activity as string}」` };
         const updates: { [k: string]: unknown } = {};
-        for (const key of ['end_time', 'category', 'details', 'mood', 'social', 'location'] as const) {
+        for (const key of ['start_time', 'end_time', 'category', 'details', 'mood', 'social', 'location'] as const) {
           if (args[key] !== undefined) updates[key] = args[key];
         }
         if (Object.keys(updates).length === 0) return { success: true, message: '没有需要更新的字段' };
@@ -348,6 +381,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 
 export type StreamEvent =
   | { type: 'text_delta'; content: string }
+  | { type: 'reasoning_delta'; content: string }
+  | { type: 'status'; content: string }
   | { type: 'tool_call'; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; name: string; result: { success: boolean; message?: string } }
   | { type: 'done' };
@@ -454,6 +489,26 @@ function parseSSEChunks(raw: string, prevBuffer: string): { events: string[]; bu
   return { events, buffer };
 }
 
+function textFromUnknown(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(textFromUnknown).join('');
+  if (value && typeof value === 'object') {
+    const obj = value as { text?: unknown; content?: unknown; summary?: unknown };
+    return textFromUnknown(obj.text ?? obj.content ?? obj.summary ?? '');
+  }
+  return '';
+}
+
+function getReasoningDelta(delta: Record<string, unknown>): string {
+  return textFromUnknown(
+    delta.reasoning_content
+      ?? delta.reasoning
+      ?? delta.thinking
+      ?? delta.reasoning_text
+      ?? delta.reasoning_details,
+  );
+}
+
 // --- Streaming Agent ---
 
 export async function* streamAgent(history: AgentMessage[], targetDate?: string): AsyncGenerator<StreamEvent> {
@@ -470,6 +525,9 @@ export async function* streamAgent(history: AgentMessage[], targetDate?: string)
     let fullContent = '';
     const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
     let sseBuffer = '';
+    let sawToolDelta = false;
+
+    yield { type: 'status', content: round === 0 ? '正在连接模型...' : '正在根据执行结果继续处理...' };
 
     for await (const chunk of readSSERaw(
       url,
@@ -485,12 +543,21 @@ export async function* streamAgent(history: AgentMessage[], targetDate?: string)
           const delta = parsed.choices?.[0]?.delta;
           if (!delta) continue;
 
+          const reasoning = getReasoningDelta(delta);
+          if (reasoning) {
+            yield { type: 'reasoning_delta', content: reasoning };
+          }
+
           if (delta.content) {
             fullContent += delta.content;
             yield { type: 'text_delta', content: delta.content };
           }
 
           if (delta.tool_calls) {
+            if (!sawToolDelta) {
+              sawToolDelta = true;
+              yield { type: 'status', content: '正在准备操作...' };
+            }
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0;
               if (!toolCallMap.has(idx)) {
@@ -530,6 +597,7 @@ export async function* streamAgent(history: AgentMessage[], targetDate?: string)
       let args: Record<string, unknown>;
       try { args = JSON.parse(tc.arguments); } catch { args = {}; }
 
+      yield { type: 'status', content: `正在执行 ${tc.name || '操作'}...` };
       yield { type: 'tool_call', name: tc.name, args };
       const result = await executeTool(tc.name, args);
       yield { type: 'tool_result', name: tc.name, result };

@@ -2,17 +2,21 @@ import 'react-native-gesture-handler';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Slot } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { View, StyleSheet } from 'react-native';
+import { AppState, View, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useEffect } from 'react';
 import { Colors } from '../constants/theme';
+import '../lib/predictionTask';
 
 export default function RootLayout() {
   useEffect(() => {
     (async () => {
       const { initNotificationHandler, setupNotificationChannel, scheduleRecordReminder, scheduleTodoReminder } = await import('../lib/notifications');
+      const { registerPredictionBackgroundTask, runForegroundPredictionCatchup } = await import('../lib/predictionTask');
       initNotificationHandler();
       await setupNotificationChannel();
+      await registerPredictionBackgroundTask();
+      await runForegroundPredictionCatchup();
 
       const { getReminderEnabled, getAllTodos } = await import('../lib/db');
 
@@ -33,6 +37,16 @@ export default function RootLayout() {
         }
       }
     })().catch(() => {});
+
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') {
+        import('../lib/predictionTask')
+          .then(m => m.runForegroundPredictionCatchup())
+          .catch(() => {});
+      }
+    });
+
+    return () => subscription.remove();
   }, []);
 
   return (

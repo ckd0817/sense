@@ -1,9 +1,9 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { View, Text, FlatList, StyleSheet, RefreshControl, LayoutAnimation, TouchableOpacity, AppState } from 'react-native';
+import { View, Text, FlatList, StyleSheet, RefreshControl, LayoutAnimation, TouchableOpacity, AppState, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
-import { getRecordsByDate, getGranularity, getTodosByDate, Record, Todo } from '../../lib/db';
+import { confirmPredictionsByDate, getGranularity, getPredictionSummaryByDate, getRecordsByDate, getTodosByDate, rejectPredictionsByDate, Record, Todo } from '../../lib/db';
 import { Colors, S, R, F } from '../../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 import ActivityBlock from '../../components/ActivityBlock';
@@ -31,6 +31,12 @@ function getMonday(d: Date): Date {
 
 const WEEKDAYS = ['日','一','二','三','四','五','六'];
 
+interface PredictionSummary {
+  pending: number;
+  confirmed: number;
+  rejected: number;
+}
+
 export default function TodayScreen() {
   const [mode, setMode] = useState<'today' | 'history'>('today');
   const [records, setRecords] = useState<Record[]>([]);
@@ -39,6 +45,7 @@ export default function TodayScreen() {
   const [weekOffset, setWeekOffset] = useState(0);
   const [granularity, setGran] = useState(30);
   const [selectedDate, setSelectedDate] = useState(dateStr(new Date()));
+  const [prediction, setPrediction] = useState<PredictionSummary>({ pending: 0, confirmed: 0, rejected: 0 });
 
   const selectedDateRef = useRef(selectedDate);
   selectedDateRef.current = selectedDate;
@@ -46,9 +53,10 @@ export default function TodayScreen() {
   modeRef.current = mode;
 
   const loadDate = useCallback(async (date: string) => {
-    const [r, t] = await Promise.all([getRecordsByDate(date), getTodosByDate(date)]);
+    const [r, t, p] = await Promise.all([getRecordsByDate(date), getTodosByDate(date), getPredictionSummaryByDate(date)]);
     setRecords(r);
     setTodos(t);
+    setPrediction({ pending: p.pending, confirmed: p.confirmed, rejected: p.rejected });
   }, []);
 
   useFocusEffect(useCallback(() => {
@@ -126,6 +134,44 @@ export default function TodayScreen() {
   const dateLabel = `${selDate.getMonth() + 1}月${selDate.getDate()}日`;
   const weekdayLabel = `周${WEEKDAYS[selDate.getDay()]}`;
 
+  const confirmTodayPrediction = async () => {
+    await confirmPredictionsByDate(selectedDate);
+    await loadDate(selectedDate);
+  };
+
+  const rejectTodayPrediction = () => {
+    Alert.alert('拒绝今日预测', '确定拒绝今天全部待确认预测？', [
+      { text: '取消', style: 'cancel' },
+      { text: '拒绝全部', style: 'destructive', onPress: async () => {
+        await rejectPredictionsByDate(selectedDate);
+        await loadDate(selectedDate);
+      }},
+    ]);
+  };
+
+  const listHeader = (
+    <>
+      {prediction.pending > 0 && (
+        <View style={s.predictionCard}>
+          <View style={s.predictionTitleRow}>
+            <Ionicons name="sparkles-outline" size={18} color={Colors.primary} />
+            <Text style={s.predictionTitle}>今日预测</Text>
+            <Text style={s.predictionCount}>{prediction.pending} 条</Text>
+          </View>
+          <View style={s.predictionActions}>
+            <TouchableOpacity style={s.predictionOutlineBtn} onPress={rejectTodayPrediction} activeOpacity={0.7}>
+              <Text style={s.predictionOutlineText}>拒绝全部</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.predictionPrimaryBtn} onPress={confirmTodayPrediction} activeOpacity={0.7}>
+              <Text style={s.predictionPrimaryText}>确认今日预测</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+      {todos.length > 0 ? <TodoSection todos={todos} currentDate={selectedDate} onChanged={() => loadDate(selectedDate)} /> : null}
+    </>
+  );
+
   return (
     <GestureDetector gesture={pinchGesture}>
       <SafeAreaView style={s.page} edges={['top']}>
@@ -158,7 +204,7 @@ export default function TodayScreen() {
               data={records}
               keyExtractor={item => item.id}
               renderItem={({ item }) => <ActivityBlock record={item} onChanged={() => loadDate(selectedDate)} />}
-              ListHeaderComponent={todos.length > 0 ? <TodoSection todos={todos} currentDate={selectedDate} onChanged={() => loadDate(selectedDate)} /> : null}
+              ListHeaderComponent={listHeader}
               ListEmptyComponent={
                 <View style={s.empty}>
                   <Text style={s.emptyTitle}>{isToday ? '新的一天' : '没有记录'}</Text>
@@ -215,4 +261,13 @@ const s = StyleSheet.create({
   weekTitle: { fontSize: F.md, fontWeight: '600', color: Colors.text },
   backToday: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingBottom: S.sm, gap: S.xs },
   backTodayText: { fontSize: F.xs, color: Colors.primary },
+  predictionCard: { backgroundColor: Colors.surface, borderRadius: R.lg, padding: S.md, marginBottom: S.md, borderWidth: 1, borderColor: 'rgba(0,113,227,0.18)' },
+  predictionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: S.xs },
+  predictionTitle: { fontSize: F.md, fontWeight: '600', color: Colors.text },
+  predictionCount: { fontSize: F.xs, color: Colors.hint, marginLeft: 'auto' },
+  predictionActions: { flexDirection: 'row', gap: S.sm, marginTop: S.md },
+  predictionOutlineBtn: { flex: 1, height: 40, borderRadius: R.xl, borderWidth: 1, borderColor: Colors.divider, alignItems: 'center', justifyContent: 'center' },
+  predictionOutlineText: { fontSize: F.sm, fontWeight: '600', color: Colors.text },
+  predictionPrimaryBtn: { flex: 1.2, height: 40, borderRadius: R.xl, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center' },
+  predictionPrimaryText: { fontSize: F.sm, fontWeight: '600', color: '#fff' },
 });
