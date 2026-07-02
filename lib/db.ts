@@ -495,7 +495,7 @@ export async function completePredictionBatch(batch: PredictionBatch, records: A
       const endTime = normalizeRecordTime(record.end_time);
       await txn.runAsync(
         `INSERT INTO records (id, created_at, start_time, end_time, raw_text, activity, category, details, mood, social, location, source, prediction_status, prediction_batch_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prediction', 'pending', ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prediction', 'confirmed', ?)`,
         [id, now, startTime, endTime, record.raw_text, record.activity, record.category, record.details, record.mood, record.social, record.location, batch.id],
       );
     }

@@ -85,6 +85,11 @@ ${todoLines.length ? todoLines.join('\n') : '（无）'}
 - JSON 格式：{"activities":[{"activity":"睡觉","category":"休息","start_time":"${targetDate}T00:00:00","end_time":"${targetDate}T07:30:00","details":"","mood":"","social":"","location":""}]}`;
 }
 
+function shouldIncludeTodoInPrediction(todo: { recurring: number; last_completed: string | null }, targetDate: string): boolean {
+  if (todo.recurring) return todo.last_completed !== targetDate;
+  return !todo.last_completed;
+}
+
 function asString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -118,7 +123,7 @@ function normalizePredictions(targetDate: string, raw: PredictedActivity[]): Act
       social: asString(item.social),
       location: asString(item.location),
       source: 'prediction',
-      prediction_status: 'pending',
+      prediction_status: 'confirmed',
     });
   }
   normalized.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
@@ -212,7 +217,7 @@ export async function ensureDailyPrediction(targetDate: string = dateStr(new Dat
     ]);
     const categories = [...Object.keys(CategoryIcons), ...customCategories.filter(c => !Object.keys(CategoryIcons).includes(c))];
     const historyLines = records.map(formatRecordLine);
-    const todoLines = todos.map(t => {
+    const todoLines = todos.filter(t => shouldIncludeTodoInPrediction(t, targetDate)).map(t => {
       const type = t.recurring ? '每日习惯' : '临时待办';
       const time = t.scheduled_time ? ` ${t.scheduled_time}` : '';
       return `- ${t.title} (${type}${time})`;

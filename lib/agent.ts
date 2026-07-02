@@ -1,7 +1,10 @@
+import { DeviceEventEmitter } from 'react-native';
 import { getAISettings, getGranularity, getCustomCategories, addCustomCategory, getAllTodos, addTodo, updateTodo, completeTodo, uncompleteTodo, findTodoByTitle, insertActivity, getTodayRecords, getRecordsByDate, updateRecord, deleteRecord, getSystemPrompt, Record as ActivityRecord } from './db';
 import { scheduleTodoReminder, cancelTodoReminder } from './notifications';
 import { CategoryIcons } from '../constants/theme';
 import { toLocalISO } from './time';
+
+export const DATA_CHANGED_EVENT = 'sense-data-changed';
 
 // --- Tool Definitions (OpenAI function calling format) ---
 
@@ -123,6 +126,21 @@ interface ToolCall {
   function: { name: string; arguments: string };
 }
 
+type RequestMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+};
+
+export interface AgentRequestContext {
+  model: string;
+  temperature: number;
+  stream: boolean;
+  messages: RequestMessage[];
+  tools: typeof tools;
+}
+
 export interface ActionLog {
   tool: string;
   args: Record<string, unknown>;
@@ -194,23 +212,33 @@ export const DEFAULT_SYSTEM_PROMPT = `你是一个日程管理和记录助手。
 - 同一个时间段只能有一个活动；如果新活动时间段和已有活动重叠，后来的真实活动会覆盖前面的活动
 - create_todo 如果用户指定了 scheduled_time 但没有指定提前提醒时间，默认设置 reminder_advance=10（分钟）`;
 
+const RUNTIME_SYSTEM_GUARDRAILS = `## 运行约束
+- 用户请求可以直接落库或修改时，优先调用工具，不要先输出长篇解释。
+- 思考保持简短，不要反复讨论同一个时间边界；做出最合理的半小时归并后继续执行。
+- 所有活动、待办时间只能使用 :00 或 :30。遇到 :15 或 :45 这种正好卡在两个半小时边界中间的时间，按用户叙述顺序选择不会重叠、不会产生 0 时长活动的相邻半小时。
+- 如果严格四舍五入会导致活动重叠或 0 时长，优先保持时间线连续、非重叠，并保留用户明确给出的下一个整点/半点开始时间。
+- 一条消息包含多段活动时，尽量在同一轮一次性调用所有需要的工具，然后再用一句话总结处理结果。`;
+
 function formatTime(iso: string): string {
   const d = new Date(iso);
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
+function shouldIncludeTodoInPrompt(todo: { recurring: number; last_completed: string | null }, promptDate: string): boolean {
+  if (todo.recurring) return todo.last_completed !== promptDate;
+  return !todo.last_completed;
+}
+
 function buildSystemPrompt(todos: { title: string; recurring: number; last_completed: string | null; scheduled_time: string | null }[], granularity: number, categories: string[], activities: ActivityRecord[], template: string, nowOverride?: Date): string {
   const now = nowOverride || new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const activeTodos = todos.filter(t => shouldIncludeTodoInPrompt(t, today));
 
-  const todoList = todos.length > 0
-    ? todos.map(t => {
-        const done = t.recurring
-          ? t.last_completed === today
-          : !!t.last_completed;
+  const todoList = activeTodos.length > 0
+    ? activeTodos.map(t => {
         const type = t.recurring ? '每日习惯' : '临时待办';
         const time = t.scheduled_time ? `，计划时间: ${t.scheduled_time}` : '';
-        return `- ${t.title}（${type}${time}）${done ? '✓ 已完成' : '○ 未完成'}`;
+        return `- ${t.title}（${type}${time}）○ 未完成`;
       }).join('\n')
     : '（无待办）';
 
@@ -227,12 +255,14 @@ function buildSystemPrompt(todos: { title: string; recurring: number; last_compl
       }).join('\n')
     : '（无活动）';
 
-  return template
+  const rendered = template
     .replace('{{current_time}}', toLocalISO(now))
     .replace('{{granularity}}', String(granularity))
     .replace('{{categories}}', categories.join('、'))
     .replace('{{todo_list}}', todoList)
     .replace('{{activity_list}}', activityList);
+
+  return `${rendered}\n\n${RUNTIME_SYSTEM_GUARDRAILS}`;
 }
 
 // --- Activity matching helper ---
@@ -377,14 +407,23 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   }
 }
 
+async function executeToolAndNotify(name: string, args: Record<string, unknown>): Promise<{ success: boolean; message?: string; id?: string }> {
+  const result = await executeTool(name, args);
+  if (result.success) {
+    DeviceEventEmitter.emit(DATA_CHANGED_EVENT, { tool: name });
+  }
+  return result;
+}
+
 // --- Stream Types ---
 
 export type StreamEvent =
+  | { type: 'request_context'; context: AgentRequestContext }
   | { type: 'text_delta'; content: string }
   | { type: 'reasoning_delta'; content: string }
   | { type: 'status'; content: string }
-  | { type: 'tool_call'; name: string; args: Record<string, unknown> }
-  | { type: 'tool_result'; name: string; result: { success: boolean; message?: string } }
+  | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
+  | { type: 'tool_result'; id: string; name: string; result: { success: boolean; message?: string } }
   | { type: 'done' };
 
 export interface AgentMessage {
@@ -424,6 +463,8 @@ async function buildContext(targetDate?: string): Promise<{ systemPrompt: string
 }
 
 // --- SSE Reader via XMLHttpRequest (reliable in React Native) ---
+
+const STREAM_IDLE_TIMEOUT_MS = 60_000;
 
 async function* readSSERaw(url: string, headers: Record<string, string>, body: string): AsyncGenerator<string> {
   const xhr = new XMLHttpRequest();
@@ -467,7 +508,19 @@ async function* readSSERaw(url: string, headers: Record<string, string>, body: s
     lastIndex = xhr.responseText.length;
     if (newText) yield newText;
     if (!finished && lastIndex >= xhr.responseText.length) {
-      await new Promise<void>(r => { resolve = r; });
+      await new Promise<void>(r => {
+        const timer = setTimeout(() => {
+          error = 'AI API 长时间没有返回新数据，请稍后重试';
+          finished = true;
+          try { xhr.abort(); } catch { /* ignore */ }
+          resolve = null;
+          r();
+        }, STREAM_IDLE_TIMEOUT_MS);
+        resolve = () => {
+          clearTimeout(timer);
+          r();
+        };
+      });
     }
   }
 
@@ -509,14 +562,38 @@ function getReasoningDelta(delta: Record<string, unknown>): string {
   );
 }
 
+function sanitizeHistoryForRequest(history: AgentMessage[]): RequestMessage[] {
+  return history.flatMap((message): RequestMessage[] => {
+    if (message.role === 'tool') return [];
+    if (message.role === 'assistant') {
+      return message.content ? [{ role: 'assistant', content: message.content }] : [];
+    }
+    return message.content ? [{ role: 'user', content: message.content }] : [];
+  });
+}
+
+function cloneRequestMessages(messages: RequestMessage[]): RequestMessage[] {
+  return JSON.parse(JSON.stringify(messages)) as RequestMessage[];
+}
+
+function buildRequestContext(model: string, messages: RequestMessage[]): AgentRequestContext {
+  return {
+    model,
+    temperature: 0.3,
+    stream: true,
+    messages: cloneRequestMessages(messages),
+    tools,
+  };
+}
+
 // --- Streaming Agent ---
 
 export async function* streamAgent(history: AgentMessage[], targetDate?: string): AsyncGenerator<StreamEvent> {
   const { systemPrompt, url, apiKey, model } = await buildContext(targetDate);
 
-  const messages = [
+  const messages: RequestMessage[] = [
     { role: 'system' as const, content: systemPrompt },
-    ...history,
+    ...sanitizeHistoryForRequest(history),
   ];
 
   const MAX_ROUNDS = 5;
@@ -527,6 +604,7 @@ export async function* streamAgent(history: AgentMessage[], targetDate?: string)
     let sseBuffer = '';
     let sawToolDelta = false;
 
+    yield { type: 'request_context', context: buildRequestContext(model, messages) };
     yield { type: 'status', content: round === 0 ? '正在连接模型...' : '正在根据执行结果继续处理...' };
 
     for await (const chunk of readSSERaw(
@@ -584,8 +662,8 @@ export async function* streamAgent(history: AgentMessage[], targetDate?: string)
     const assistantMsg: AgentMessage = {
       role: 'assistant',
       content: fullContent || undefined,
-      tool_calls: Array.from(toolCallMap.values()).map(tc => ({
-        id: tc.id,
+      tool_calls: Array.from(toolCallMap.entries()).map(([idx, tc]) => ({
+        id: tc.id || `tool_${round}_${idx}_${tc.name || 'call'}`,
         type: 'function' as const,
         function: { name: tc.name, arguments: tc.arguments },
       })),
@@ -593,16 +671,17 @@ export async function* streamAgent(history: AgentMessage[], targetDate?: string)
     messages.push(assistantMsg);
 
     // Execute tool calls
-    for (const tc of toolCallMap.values()) {
+    for (const [idx, tc] of toolCallMap.entries()) {
       let args: Record<string, unknown>;
       try { args = JSON.parse(tc.arguments); } catch { args = {}; }
+      const toolCallId = tc.id || `tool_${round}_${idx}_${tc.name || 'call'}`;
 
       yield { type: 'status', content: `正在执行 ${tc.name || '操作'}...` };
-      yield { type: 'tool_call', name: tc.name, args };
-      const result = await executeTool(tc.name, args);
-      yield { type: 'tool_result', name: tc.name, result };
+      yield { type: 'tool_call', id: toolCallId, name: tc.name, args };
+      const result = await executeToolAndNotify(tc.name, args);
+      yield { type: 'tool_result', id: toolCallId, name: tc.name, result };
 
-      messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) });
+      messages.push({ role: 'tool', tool_call_id: toolCallId, content: JSON.stringify(result) });
     }
   }
 
@@ -699,7 +778,7 @@ export async function runAgent(userText: string, targetDate?: string): Promise<A
         args = {};
       }
 
-      const result = await executeTool(tc.function.name, args);
+      const result = await executeToolAndNotify(tc.function.name, args);
       actions.push({ tool: tc.function.name, args, result });
 
       messages.push({

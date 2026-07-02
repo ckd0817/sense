@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { getChatMessages, addChatMessage, clearChatMessages, getChatDate, ChatMessage } from '../../lib/db';
-import { streamAgent, AgentMessage, StreamEvent } from '../../lib/agent';
+import { streamAgent, AgentMessage, AgentRequestContext } from '../../lib/agent';
 import { Colors, S, R, F } from '../../constants/theme';
 
 // --- Lightweight Markdown renderer ---
@@ -70,20 +70,39 @@ function renderMarkdown(md: string, baseStyle: any): React.ReactNode {
 }
 
 interface ToolInfo {
+  id: string;
   name: string;
-  success: boolean;
+  success?: boolean;
   args?: Record<string, unknown>;
+  result?: { success: boolean; message?: string };
 }
 
 interface Bubble {
   id: string;
   role: 'user' | 'assistant';
   text: string;
+  context?: AgentRequestContext;
+  contextOpen?: boolean;
   reasoning?: string;
   status?: string;
   thinkingOpen?: boolean;
   tools: ToolInfo[];
   streaming?: boolean;
+  error?: boolean;
+  retryText?: string;
+}
+
+function parseArgs(value: unknown): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined;
+    } catch {
+      return { arguments: value };
+    }
+  }
+  return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
 }
 
 function msgToBubble(m: ChatMessage): Bubble | null {
@@ -92,7 +111,13 @@ function msgToBubble(m: ChatMessage): Bubble | null {
   if (m.role === 'assistant' && m.tool_calls) {
     try {
       const tcs = JSON.parse(m.tool_calls);
-      tools = tcs.map((tc: any) => ({ name: tc.function?.name || tc.name || '?', success: true }));
+      tools = tcs.map((tc: any, index: number) => ({
+        id: tc.id || `saved-tool-${index}`,
+        name: tc.function?.name || tc.name || '?',
+        success: typeof tc.success === 'boolean' ? tc.success : tc.result?.success ?? true,
+        args: parseArgs(tc.function?.arguments ?? tc.args),
+        result: tc.result,
+      }));
     } catch { /* ignore */ }
   }
   return {
@@ -130,16 +155,11 @@ export default function RecordScreen() {
         const b = msgToBubble(m);
         if (b) bubbles.push(b);
       } else if (m.role === 'assistant') {
-        const aMsg: AgentMessage = { role: 'assistant', content: m.content || undefined };
-        if (m.tool_calls) {
-          try { aMsg.tool_calls = JSON.parse(m.tool_calls); } catch { /* */ }
+        if (m.content) {
+          history.push({ role: 'assistant', content: m.content });
         }
-        history.push(aMsg);
         const b = msgToBubble(m);
         if (b) bubbles.push(b);
-        // Add tool messages to history
-      } else if (m.role === 'tool') {
-        history.push({ role: 'tool', tool_call_id: m.tool_call_id || undefined, content: m.content });
       }
     }
     setBubbles(bubbles);
@@ -147,7 +167,9 @@ export default function RecordScreen() {
   }, []);
 
   useFocusEffect(useCallback(() => {
-    loadChat(routeDate ? String(routeDate) : undefined);
+    if (!busyRef.current) {
+      loadChat(routeDate ? String(routeDate) : undefined);
+    }
   }, [loadChat, routeDate]));
 
   useEffect(() => {
@@ -175,59 +197,54 @@ export default function RecordScreen() {
     setTimeout(() => flatRef.current?.scrollToEnd?.({ animated: true }), 50);
   };
 
-  const send = async () => {
-    const t = text.trim();
-    if (!t || busy) return;
-    setBusy(true);
-    setText('');
+  const serializeToolCalls = (items: ToolInfo[]) => {
+    if (items.length === 0) return null;
+    return JSON.stringify(items.map(item => ({
+      id: item.id,
+      type: 'function',
+      function: {
+        name: item.name,
+        arguments: JSON.stringify(item.args ?? {}),
+      },
+      success: item.success === true,
+      result: item.result,
+    })));
+  };
 
-    if (!routeDate && chatDateRef.current !== getChatDate()) {
-      await loadChat();
-    }
+  const upsertTool = (asstId: string, tool: ToolInfo) => {
+    setBubbles(prev => prev.map(b => {
+      if (b.id !== asstId) return b;
+      const exists = b.tools.some(t => t.id === tool.id);
+      const tools = exists
+        ? b.tools.map(t => t.id === tool.id ? { ...t, ...tool } : t)
+        : [...b.tools, tool];
+      return { ...b, tools };
+    }));
+  };
 
-    // Save user message
-    await addChatMessage({ chat_date: chatDateRef.current, role: 'user', content: t });
-
-    const userBubble: Bubble = { id: `user-${Date.now()}`, role: 'user', text: t, tools: [] };
-    setBubbles(prev => [...prev, userBubble]);
-    scrollToBottom();
-
-    // Add to history
-    historyRef.current.push({ role: 'user', content: t });
-
-    // Create placeholder assistant bubble
-    const asstId = `asst-${Date.now()}`;
-    const asstBubble: Bubble = {
-      id: asstId,
-      role: 'assistant',
-      text: '',
-      reasoning: '',
-      status: '正在连接模型...',
-      thinkingOpen: true,
-      tools: [],
-      streaming: true,
-    };
-    setBubbles(prev => [...prev, asstBubble]);
-    scrollToBottom();
-
+  const runModelRequest = async (asstId: string, requestDate: string, requestHistory: AgentMessage[], retryText: string) => {
     try {
       let fullContent = '';
       let reasoningContent = '';
       let statusText = '正在连接模型...';
-      const toolResults: { name: string; success: boolean }[] = [];
-      const pendingArgs = new Map<number, Record<string, unknown>>();
-      let toolIdx = 0;
+      const toolInfos: ToolInfo[] = [];
+      const targetDate = requestDate !== getChatDate() ? requestDate : undefined;
 
-      for await (const event of streamAgent(historyRef.current, chatDateRef.current !== getChatDate() ? chatDateRef.current : undefined)) {
-        if (event.type === 'text_delta') {
+      for await (const event of streamAgent(requestHistory, targetDate)) {
+        if (event.type === 'request_context') {
+          setBubbles(prev => prev.map(b =>
+            b.id === asstId ? { ...b, context: event.context, contextOpen: true } : b
+          ));
+        } else if (event.type === 'text_delta') {
           fullContent += event.content;
           setBubbles(prev => prev.map(b =>
             b.id === asstId ? { ...b, text: fullContent } : b
           ));
         } else if (event.type === 'reasoning_delta') {
           reasoningContent += event.content;
+          statusText = '模型正在思考...';
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, reasoning: reasoningContent, thinkingOpen: true } : b
+            b.id === asstId ? { ...b, reasoning: reasoningContent, status: statusText, thinkingOpen: true } : b
           ));
         } else if (event.type === 'status') {
           statusText = event.content;
@@ -235,21 +252,31 @@ export default function RecordScreen() {
             b.id === asstId ? { ...b, status: statusText } : b
           ));
         } else if (event.type === 'tool_call') {
-          pendingArgs.set(toolIdx, event.args);
+          const tool: ToolInfo = { id: event.id, name: event.name, args: event.args };
+          toolInfos.push(tool);
           statusText = `正在执行：${toolLabel[event.name] || event.name}`;
           setBubbles(prev => prev.map(b =>
             b.id === asstId ? { ...b, status: statusText, thinkingOpen: true } : b
           ));
+          upsertTool(asstId, tool);
         } else if (event.type === 'tool_result') {
-          const args = pendingArgs.get(toolIdx);
-          toolIdx++;
-          toolResults.push({ name: event.name, success: event.result.success });
+          const existing = toolInfos.find(t => t.id === event.id);
+          const nextTool: ToolInfo = existing
+            ? { ...existing, success: event.result.success, result: event.result }
+            : { id: event.id, name: event.name, success: event.result.success, result: event.result };
+          if (existing) {
+            existing.success = event.result.success;
+            existing.result = event.result;
+          } else {
+            toolInfos.push(nextTool);
+          }
           statusText = event.result.success
             ? `已完成：${toolLabel[event.name] || event.name}`
             : `执行失败：${toolLabel[event.name] || event.name}`;
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, status: statusText, tools: [...b.tools, { name: event.name, success: event.result.success, args }] } : b
+            b.id === asstId ? { ...b, status: statusText } : b
           ));
+          upsertTool(asstId, nextTool);
         } else if (event.type === 'done') {
           setBubbles(prev => prev.map(b =>
             b.id === asstId ? { ...b, status: '处理完成', streaming: false } : b
@@ -257,24 +284,97 @@ export default function RecordScreen() {
         }
       }
 
-      // Save assistant message
-      const toolCallsJson = toolResults.length > 0 ? JSON.stringify(toolResults.map(tr => ({
-        function: { name: tr.name }
-      }))) : null;
-      await addChatMessage({ chat_date: chatDateRef.current, role: 'assistant', content: fullContent, reasoning: reasoningContent, tool_calls: toolCallsJson });
+      const toolCallsJson = serializeToolCalls(toolInfos);
+      if (fullContent || reasoningContent || toolCallsJson) {
+        await addChatMessage({
+          chat_date: requestDate,
+          role: 'assistant',
+          content: fullContent,
+          reasoning: reasoningContent,
+          tool_calls: toolCallsJson,
+        });
+      }
 
-      // Update history
-      const asstMsg: AgentMessage = { role: 'assistant', content: fullContent || undefined };
-      historyRef.current.push(asstMsg);
+      historyRef.current = fullContent
+        ? [...requestHistory, { role: 'assistant', content: fullContent }]
+        : requestHistory;
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : '未知错误';
       setBubbles(prev => prev.map(b =>
-        b.id === asstId ? { ...b, text: `错误: ${errMsg}`, streaming: false } : b
+        b.id === asstId
+          ? {
+              ...b,
+              text: `错误: ${errMsg}`,
+              status: '请求失败，可重试',
+              streaming: false,
+              error: true,
+              retryText,
+            }
+          : b
       ));
     } finally {
+      busyRef.current = false;
       setBusy(false);
       scrollToBottom();
     }
+  };
+
+  const beginRequest = async (prompt: string, options: { appendUser: boolean; removeBubbleId?: string }) => {
+    const t = prompt.trim();
+    if (!t || busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    if (options.appendUser) setText('');
+
+    try {
+      if (!routeDate && chatDateRef.current !== getChatDate()) {
+        await loadChat();
+      }
+
+      const requestDate = chatDateRef.current || (routeDate ? String(routeDate) : getChatDate());
+      chatDateRef.current = requestDate;
+
+      if (options.removeBubbleId) {
+        setBubbles(prev => prev.filter(b => b.id !== options.removeBubbleId));
+      }
+
+      if (options.appendUser) {
+        await addChatMessage({ chat_date: requestDate, role: 'user', content: t });
+        const userBubble: Bubble = { id: `user-${Date.now()}`, role: 'user', text: t, tools: [] };
+        setBubbles(prev => [...prev, userBubble]);
+        historyRef.current = [...historyRef.current, { role: 'user', content: t }];
+      }
+
+      const requestHistory = [...historyRef.current];
+      const asstId = `asst-${Date.now()}`;
+      const asstBubble: Bubble = {
+        id: asstId,
+        role: 'assistant',
+        text: '',
+        reasoning: '',
+        status: '正在准备上下文...',
+        thinkingOpen: true,
+        tools: [],
+        streaming: true,
+      };
+      setBubbles(prev => [...prev, asstBubble]);
+      scrollToBottom();
+
+      await runModelRequest(asstId, requestDate, requestHistory, t);
+    } catch (e) {
+      busyRef.current = false;
+      setBusy(false);
+      Alert.alert('发送失败', e instanceof Error ? e.message : '未知错误');
+    }
+  };
+
+  const send = async () => {
+    await beginRequest(text, { appendUser: true });
+  };
+
+  const retryAssistant = async (item: Bubble) => {
+    if (!item.retryText) return;
+    await beginRequest(item.retryText, { appendUser: false, removeBubbleId: item.id });
   };
 
   const handleClear = () => {
@@ -329,6 +429,58 @@ export default function RecordScreen() {
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, thinkingOpen: !b.thinkingOpen } : b));
   };
 
+  const toggleContext = (id: string) => {
+    setBubbles(prev => prev.map(b => b.id === id ? { ...b, contextOpen: !b.contextOpen } : b));
+  };
+
+  const formatJson = (value: unknown): string => {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const renderContext = (item: Bubble) => {
+    if (item.role !== 'assistant' || !item.context) return null;
+    const { context } = item;
+    const preview = `${context.messages.length} 条消息 · ${context.tools.length} 个工具`;
+    return (
+      <View style={s.contextBox}>
+        <TouchableOpacity style={s.contextHead} onPress={() => toggleContext(item.id)} activeOpacity={0.7}>
+          <Ionicons name={item.contextOpen ? 'chevron-down' : 'chevron-forward'} size={14} color={Colors.hint} />
+          <Text style={s.contextTitle}>请求上下文</Text>
+          <Text style={s.contextPreview} numberOfLines={1}>{preview}</Text>
+        </TouchableOpacity>
+        {item.contextOpen && (
+          <View style={s.contextBody}>
+            <View style={s.contextMeta}>
+              <Text style={s.contextMetaText}>model: {context.model}</Text>
+              <Text style={s.contextMetaText}>temperature: {context.temperature}</Text>
+              <Text style={s.contextMetaText}>stream: {context.stream ? 'true' : 'false'}</Text>
+            </View>
+
+            <Text style={s.contextSectionTitle}>messages</Text>
+            {context.messages.map((message, index) => (
+              <View key={`${message.role}-${index}`} style={s.contextMessage}>
+                <Text style={s.contextRole}>{index + 1}. {message.role}</Text>
+                {message.tool_call_id ? <Text style={s.contextHint}>tool_call_id: {message.tool_call_id}</Text> : null}
+                {message.content ? <Text style={s.contextText} selectable>{message.content}</Text> : null}
+                {message.tool_calls && message.tool_calls.length > 0 ? (
+                  <Text style={s.contextCode} selectable>{formatJson(message.tool_calls)}</Text>
+                ) : null}
+                {!message.content && !message.tool_calls?.length ? <Text style={s.contextHint}>空内容</Text> : null}
+              </View>
+            ))}
+
+            <Text style={s.contextSectionTitle}>tools</Text>
+            <Text style={s.contextCode} selectable>{formatJson(context.tools)}</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
   const renderThinking = (item: Bubble) => {
     if (item.role !== 'assistant') return null;
     if (!item.reasoning && !item.status && !item.streaming) return null;
@@ -354,6 +506,7 @@ export default function RecordScreen() {
 
   const renderItem = ({ item }: { item: Bubble }) => (
     <View style={[s.bubble, item.role === 'user' ? s.bubbleUser : s.bubbleAsst]}>
+      {renderContext(item)}
       {renderThinking(item)}
       {item.text ? (
         item.role === 'user' ? (
@@ -365,12 +518,26 @@ export default function RecordScreen() {
       {item.tools.length > 0 && (
         <View style={s.toolRow}>
           {item.tools.map((tool, i) => (
-            <TouchableOpacity key={i} style={[s.toolTag, tool.success ? s.toolOk : s.toolFail]} onPress={() => setDetailTool(tool)} activeOpacity={0.6}>
-              <Text style={s.toolTagText}>{tool.success ? '✓' : '✗'} {toolLabel[tool.name] || tool.name}</Text>
+            <TouchableOpacity
+              key={`${tool.id}-${i}`}
+              style={[
+                s.toolTag,
+                tool.success === false ? s.toolFail : tool.success === true ? s.toolOk : s.toolRunning,
+              ]}
+              onPress={() => setDetailTool(tool)}
+              activeOpacity={0.6}
+            >
+              <Text style={s.toolTagText}>{tool.success === undefined ? '…' : tool.success ? '✓' : '✗'} {toolLabel[tool.name] || tool.name}</Text>
             </TouchableOpacity>
           ))}
         </View>
       )}
+      {item.error && item.retryText ? (
+        <TouchableOpacity style={[s.retryBtn, busy && s.retryOff]} onPress={() => retryAssistant(item)} disabled={busy} activeOpacity={0.7}>
+          <Ionicons name="refresh" size={14} color={busy ? Colors.hint : Colors.primary} />
+          <Text style={[s.retryText, busy && s.retryTextOff]}>重试这次请求</Text>
+        </TouchableOpacity>
+      ) : null}
       {item.streaming && !item.text && !item.reasoning && <View style={s.cursor} />}
     </View>
   );
@@ -435,25 +602,34 @@ export default function RecordScreen() {
                 <Ionicons name="close" size={20} color={Colors.hint} />
               </TouchableOpacity>
             </View>
-            {detailTool?.args && Object.keys(detailTool.args).length > 0 ? (
+            {detailTool && (
+              (detailTool.args && Object.keys(detailTool.args).length > 0) || detailTool.result || detailTool.success !== undefined
+            ) ? (
               <View style={s.modalBody}>
-                {Object.entries(detailTool.args).map(([key, value]) => (
+                {detailTool.args && Object.entries(detailTool.args).map(([key, value]) => (
                   <View key={key} style={s.fieldRow}>
                     <Text style={s.fieldLabel}>{fieldLabel[key] || key}</Text>
                     <Text style={s.fieldValue}>{formatFieldValue(key, value)}</Text>
                   </View>
                 ))}
+                <View style={[s.fieldRow, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.divider }]}>
+                  <Text style={s.fieldLabel}>执行状态</Text>
+                  <Text style={[
+                    s.fieldValue,
+                    detailTool.success === false ? { color: '#D32F2F' } : detailTool.success === true ? { color: Colors.success } : null,
+                  ]}>
+                    {detailTool.success === undefined ? '执行中' : detailTool.success ? '成功' : '失败'}
+                  </Text>
+                </View>
+                {detailTool.result?.message ? (
+                  <View style={s.fieldRow}>
+                    <Text style={s.fieldLabel}>结果信息</Text>
+                    <Text style={s.fieldValue}>{detailTool.result.message}</Text>
+                  </View>
+                ) : null}
               </View>
             ) : (
               <Text style={s.modalEmpty}>无参数信息</Text>
-            )}
-            {!detailTool?.success && detailTool?.args && (
-              <View style={s.modalBody}>
-                <View style={[s.fieldRow, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.divider }]}>
-                  <Text style={s.fieldLabel}>执行结果</Text>
-                  <Text style={[s.fieldValue, { color: '#D32F2F' }]}>失败</Text>
-                </View>
-              </View>
             )}
           </View>
         </TouchableOpacity>
@@ -512,6 +688,85 @@ const s = StyleSheet.create({
   },
   bubbleTextUser: {
     color: '#fff',
+  },
+  contextBox: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.divider,
+    borderRadius: R.md,
+    overflow: 'hidden',
+    marginBottom: S.sm,
+    backgroundColor: '#FAFAFA',
+  },
+  contextHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.xs,
+    paddingHorizontal: S.sm,
+    paddingVertical: S.xs,
+  },
+  contextTitle: {
+    fontSize: F.xs,
+    fontWeight: '600',
+    color: Colors.subtext,
+    flexShrink: 0,
+  },
+  contextPreview: {
+    flex: 1,
+    fontSize: F.xs,
+    color: Colors.hint,
+  },
+  contextBody: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.divider,
+    paddingHorizontal: S.sm,
+    paddingVertical: S.sm,
+    gap: S.xs,
+  },
+  contextMeta: {
+    gap: 2,
+    paddingBottom: S.xs,
+  },
+  contextMetaText: {
+    fontSize: F.xs,
+    color: Colors.subtext,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
+  },
+  contextSectionTitle: {
+    fontSize: F.xs,
+    fontWeight: '700',
+    color: Colors.text,
+    marginTop: S.xs,
+  },
+  contextMessage: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.divider,
+    borderRadius: R.sm,
+    padding: S.xs,
+    gap: 2,
+    backgroundColor: Colors.surface,
+  },
+  contextRole: {
+    fontSize: F.xs,
+    fontWeight: '700',
+    color: Colors.primary,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
+  },
+  contextHint: {
+    fontSize: F.xs,
+    color: Colors.hint,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
+  },
+  contextText: {
+    fontSize: F.xs,
+    color: Colors.subtext,
+    lineHeight: 17,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
+  },
+  contextCode: {
+    fontSize: F.xs,
+    color: Colors.subtext,
+    lineHeight: 17,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
   },
   thinkingBox: {
     borderWidth: StyleSheet.hairlineWidth,
@@ -580,9 +835,35 @@ const s = StyleSheet.create({
   toolFail: {
     backgroundColor: '#FFEBEE',
   },
+  toolRunning: {
+    backgroundColor: '#E3F2FD',
+  },
   toolTagText: {
     fontSize: F.xs - 1,
     color: Colors.subtext,
+  },
+  retryBtn: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.xs,
+    marginTop: S.sm,
+    paddingHorizontal: S.sm,
+    paddingVertical: S.xs,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    borderRadius: R.sm,
+  },
+  retryOff: {
+    borderColor: Colors.divider,
+  },
+  retryText: {
+    fontSize: F.xs,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+  retryTextOff: {
+    color: Colors.hint,
   },
   cursor: {
     width: 2,
