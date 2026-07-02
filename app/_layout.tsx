@@ -25,11 +25,15 @@ export default function RootLayout() {
         await scheduleRecordReminder();
       }
 
-      // Restore todo reminders
+      // Restore todo reminders（recurring todo 按"今天是否已完成"判断）
       const todos = await getAllTodos();
       const now = Date.now();
+      const today = (() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      })();
       for (const t of todos) {
-        if (t.scheduled_time && !t.last_completed) {
+        if (t.scheduled_time && t.last_completed !== today) {
           const target = new Date(t.scheduled_time).getTime() - (t.reminder_advance ?? 10) * 60 * 1000;
           if (target > now) {
             await scheduleTodoReminder(t.id, t.title, t.scheduled_time, t.reminder_advance ?? 10);

@@ -4,6 +4,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, S, R, F } from '../constants/theme';
 import { Todo, deleteTodo, completeTodo, uncompleteTodo, addTodo } from '../lib/db';
+import { scheduleTodoReminder, cancelTodoReminder } from '../lib/notifications';
 import EditTodoModal from './EditTodoModal';
 
 interface Props {
@@ -25,8 +26,12 @@ export default function TodoSection({ todos, currentDate, onChanged }: Props) {
   const toggle = async (todo: Todo) => {
     if (todo.last_completed) {
       await uncompleteTodo(todo.id);
+      if (todo.scheduled_time) {
+        await scheduleTodoReminder(todo.id, todo.title, todo.scheduled_time, todo.reminder_advance ?? 10);
+      }
     } else {
       await completeTodo(todo.id, currentDate);
+      await cancelTodoReminder(todo.id);
     }
     onChanged();
   };

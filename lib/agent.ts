@@ -6,6 +6,11 @@ import { toLocalISO } from './time';
 
 export const DATA_CHANGED_EVENT = 'sense-data-changed';
 
+function todayDateStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 // --- Tool Definitions (OpenAI function calling format) ---
 
 const tools = [
@@ -215,8 +220,8 @@ export const DEFAULT_SYSTEM_PROMPT = `你是一个日程管理和记录助手。
 const RUNTIME_SYSTEM_GUARDRAILS = `## 运行约束
 - 用户请求可以直接落库或修改时，优先调用工具，不要先输出长篇解释。
 - 思考保持简短，不要反复讨论同一个时间边界；做出最合理的半小时归并后继续执行。
-- 所有活动、待办时间只能使用 :00 或 :30。遇到 :15 或 :45 这种正好卡在两个半小时边界中间的时间，按用户叙述顺序选择不会重叠、不会产生 0 时长活动的相邻半小时。
-- 如果严格四舍五入会导致活动重叠或 0 时长，优先保持时间线连续、非重叠，并保留用户明确给出的下一个整点/半点开始时间。
+- 所有活动、待办时间会被四舍五入到最近的半小时边界（:00–:14→:00，:15–:44→:30，:45–:59→下一个整点）。
+- 如果归并后会导致活动重叠或 0 时长，调整 end_time 让时间线保持连续、非重叠。
 - 一条消息包含多段活动时，尽量在同一轮一次性调用所有需要的工具，然后再用一句话总结处理结果。`;
 
 function formatTime(iso: string): string {
@@ -338,8 +343,9 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       case 'update_todo': {
         const todo = await findTodoByTitle(args.title as string);
         if (!todo) return { success: false, message: `未找到待办「${args.title as string}」` };
+        const today = todayDateStr();
         if (args.completed === true) {
-          if (!todo.last_completed) {
+          if (todo.last_completed !== today) {
             await completeTodo(todo.id);
             await cancelTodoReminder(todo.id);
           }
@@ -347,6 +353,10 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         }
         if (args.completed === false) {
           await uncompleteTodo(todo.id);
+          // 重新调度通知（若有计划时间）
+          if (todo.scheduled_time) {
+            await scheduleTodoReminder(todo.id, todo.title, todo.scheduled_time, todo.reminder_advance ?? 10);
+          }
           return { success: true };
         }
         const updates: Parameters<typeof updateTodo>[1] = {};

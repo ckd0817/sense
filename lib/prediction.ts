@@ -5,6 +5,7 @@ import {
   completePredictionBatch,
   confirmExpiredPredictions,
   createPredictionBatch,
+  deletePredictionBatch,
   failPredictionBatch,
   getAISettings,
   getAllTodos,
@@ -200,7 +201,11 @@ export async function ensureDailyPrediction(targetDate: string = dateStr(new Dat
 
   const existing = await getPredictionBatchByDate(targetDate);
   if (existing) {
-    return { status: 'skipped', reason: existing.status };
+    if (existing.status !== 'failed') {
+      return { status: 'skipped', reason: existing.status };
+    }
+    // 失败的允许重试：删除旧 batch 后继续
+    await deletePredictionBatch(existing.id);
   }
 
   const batch = await createPredictionBatch(targetDate, settings.model);

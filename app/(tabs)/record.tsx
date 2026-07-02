@@ -140,6 +140,8 @@ export default function RecordScreen() {
   const historyRef = useRef<AgentMessage[]>([]);
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  const bubblesRef = useRef(bubbles);
+  bubblesRef.current = bubbles;
   const routeDateRef = useRef(routeDate);
   routeDateRef.current = routeDate;
 
@@ -174,7 +176,8 @@ export default function RecordScreen() {
 
   useEffect(() => {
     const syncChatDate = () => {
-      if (routeDateRef.current || busyRef.current) return;
+      // 有进行中对话时不切换 chat_date，避免跨日打断上下文
+      if (routeDateRef.current || busyRef.current || bubblesRef.current.length > 0) return;
       const currentDate = getChatDate();
       if (chatDateRef.current && chatDateRef.current !== currentDate) {
         loadChat(currentDate);

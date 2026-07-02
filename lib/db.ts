@@ -197,9 +197,19 @@ async function deleteOverlappingRecordsWithDB(
     excludeClause = 'AND id != ?';
     params.push(excludeId);
   }
+  // 预测项软删除（保留数据可恢复），用户记录物理删除
+  await database.runAsync(
+    `UPDATE records SET prediction_status = 'rejected'
+     WHERE source = 'prediction'
+       AND prediction_status != 'rejected'
+       AND start_time < ?
+       AND (end_time IS NULL OR end_time > ?)
+       ${excludeClause}`,
+    params,
+  );
   await database.runAsync(
     `DELETE FROM records
-     WHERE prediction_status != 'rejected'
+     WHERE source = 'user'
        AND start_time < ?
        AND (end_time IS NULL OR end_time > ?)
        ${excludeClause}`,
@@ -236,8 +246,13 @@ async function deleteOlderOverlappingRecordsWithDB(database: SQLite.SQLiteDataba
     keep.push(record);
   }
 
-  for (const id of deleteIds) {
-    await database.runAsync('DELETE FROM records WHERE id = ?', [id]);
+  for (const record of records) {
+    if (!deleteIds.has(record.id)) continue;
+    if (record.source === 'prediction') {
+      await database.runAsync("UPDATE records SET prediction_status = 'rejected' WHERE id = ?", [record.id]);
+    } else {
+      await database.runAsync('DELETE FROM records WHERE id = ?', [record.id]);
+    }
   }
 }
 
@@ -354,9 +369,8 @@ export async function updateRecord(id: string, updates: Partial<Omit<Record, 'id
   const normalized: Partial<Omit<Record, 'id'>> = { ...updates };
   if (updates.start_time !== undefined) normalized.start_time = normalizeRecordTime(updates.start_time) ?? '';
   if (updates.end_time !== undefined) normalized.end_time = normalizeRecordTime(updates.end_time);
-  const materialEdit = Object.keys(normalized).some(k => !['source', 'prediction_status', 'prediction_batch_id'].includes(k));
-  if (existing?.source === 'prediction' && materialEdit) {
-    normalized.source = 'user';
+  // 编辑 pending 预测视为用户接受，转 confirmed（保留 source）
+  if (existing?.source === 'prediction' && existing.prediction_status === 'pending' && !('prediction_status' in updates)) {
     normalized.prediction_status = 'confirmed';
   }
   const fields = Object.keys(normalized);
@@ -683,10 +697,6 @@ export async function getGranularity(): Promise<number> {
   return 30;
 }
 
-export async function setGranularity(_minutes: number): Promise<void> {
-  await setSetting('granularity', '30');
-}
-
 export async function getTodoReminderAdvance(): Promise<number> {
   const val = await getSetting('todo_reminder_advance');
   return val ? parseInt(val, 10) : 5;
@@ -783,47 +793,54 @@ export async function importRecords(json: string): Promise<number> {
   }
   const database = await getDB();
   let count = 0;
-  for (const r of data.records) {
-    const id = r.id || generateId();
-    await database.runAsync(
-      `INSERT OR REPLACE INTO records (id, created_at, start_time, end_time, raw_text, activity, category, details, mood, social, location, source, prediction_status, prediction_batch_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, r.created_at, r.start_time, r.end_time ?? null, r.raw_text,
-       r.activity ?? '', r.category ?? '其他', r.details ?? '', r.mood ?? '', r.social ?? '', r.location ?? '',
-       r.source ?? 'user', r.prediction_status ?? 'confirmed', r.prediction_batch_id ?? null]
-    );
-    count++;
-  }
-  // Import todos if present (v2 format)
-  if (data.todos && Array.isArray(data.todos)) {
-    for (const t of data.todos) {
-      const id = t.id || generateId();
-      await database.runAsync(
-        `INSERT OR REPLACE INTO todos (id, title, recurring, scheduled_time, reminder_advance, last_completed, sort_order, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, t.title, t.recurring ?? 0, normalizeTodoTime(t.scheduled_time) ?? null, t.reminder_advance ?? null, t.last_completed ?? null, t.sort_order ?? 0, t.created_at ?? toLocalISO(new Date())]
+  await database.withExclusiveTransactionAsync(async (txn) => {
+    for (const r of data.records) {
+      const id = r.id || generateId();
+      await txn.runAsync(
+        `INSERT OR REPLACE INTO records (id, created_at, start_time, end_time, raw_text, activity, category, details, mood, social, location, source, prediction_status, prediction_batch_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, r.created_at, r.start_time, r.end_time ?? null, r.raw_text,
+         r.activity ?? '', r.category ?? '其他', r.details ?? '', r.mood ?? '', r.social ?? '', r.location ?? '',
+         r.source ?? 'user', r.prediction_status ?? 'confirmed', r.prediction_batch_id ?? null]
       );
       count++;
     }
-  }
-  if (data.predictionBatches && Array.isArray(data.predictionBatches)) {
-    for (const b of data.predictionBatches) {
-      const id = b.id || generateId();
-      await database.runAsync(
-        `INSERT OR REPLACE INTO prediction_batches (id, target_date, status, model, error, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          b.target_date,
-          b.status ?? 'completed',
-          b.model ?? '',
-          b.error ?? '',
-          b.created_at ?? toLocalISO(new Date()),
-          b.updated_at ?? toLocalISO(new Date()),
-        ]
-      );
-      count++;
+    // Import todos if present (v2 format)
+    if (data.todos && Array.isArray(data.todos)) {
+      for (const t of data.todos) {
+        const id = t.id || generateId();
+        await txn.runAsync(
+          `INSERT OR REPLACE INTO todos (id, title, recurring, scheduled_time, reminder_advance, last_completed, sort_order, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, t.title, t.recurring ?? 0, normalizeTodoTime(t.scheduled_time) ?? null, t.reminder_advance ?? null, t.last_completed ?? null, t.sort_order ?? 0, t.created_at ?? toLocalISO(new Date())]
+        );
+        count++;
+      }
     }
-  }
+    if (data.predictionBatches && Array.isArray(data.predictionBatches)) {
+      for (const b of data.predictionBatches) {
+        const id = b.id || generateId();
+        await txn.runAsync(
+          `INSERT OR REPLACE INTO prediction_batches (id, target_date, status, model, error, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            id,
+            b.target_date,
+            b.status ?? 'completed',
+            b.model ?? '',
+            b.error ?? '',
+            b.created_at ?? toLocalISO(new Date()),
+            b.updated_at ?? toLocalISO(new Date()),
+          ]
+        );
+        count++;
+      }
+    }
+  });
   return count;
+}
+
+export async function deletePredictionBatch(batchId: string): Promise<void> {
+  const database = await getDB();
+  await database.runAsync('DELETE FROM prediction_batches WHERE id = ?', [batchId]);
 }
