@@ -236,7 +236,7 @@ export default function RecordScreen() {
       for await (const event of streamAgent(requestHistory, targetDate)) {
         if (event.type === 'request_context') {
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, context: event.context, contextOpen: true } : b
+            b.id === asstId ? { ...b, context: event.context, contextOpen: false } : b
           ));
         } else if (event.type === 'text_delta') {
           fullContent += event.content;
@@ -282,7 +282,7 @@ export default function RecordScreen() {
           upsertTool(asstId, nextTool);
         } else if (event.type === 'done') {
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, status: '处理完成', streaming: false } : b
+            b.id === asstId ? { ...b, status: '处理完成', streaming: false, thinkingOpen: false, contextOpen: false } : b
           ));
         }
       }
