@@ -95,6 +95,14 @@ async function initDB(database: SQLite.SQLiteDatabase): Promise<void> {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS activity_change_batches (
+      request_id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL UNIQUE,
+      target_date TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_records_start_time ON records(start_time);
     CREATE INDEX IF NOT EXISTS idx_prediction_batches_date ON prediction_batches(target_date);
   `);
@@ -147,6 +155,63 @@ export interface PredictionBatch {
 export type ActivityInput =
   Omit<Record, 'id' | 'source' | 'prediction_status' | 'prediction_batch_id'> &
   Partial<Pick<Record, 'source' | 'prediction_status' | 'prediction_batch_id'>>;
+
+export type ActivityChangeData = Partial<Pick<
+  Record,
+  'activity' | 'category' | 'start_time' | 'end_time' | 'details' | 'mood' | 'social' | 'location'
+>>;
+
+export interface ActivityChangeOperation {
+  op_id: string;
+  action: 'create' | 'update' | 'delete';
+  record_id?: string;
+  match?: {
+    activity?: string;
+    start_time?: string;
+  };
+  data?: ActivityChangeData;
+}
+
+export interface ActivityChangeRequest {
+  request_id: string;
+  target_date?: string;
+  scope?: {
+    start_date: string;
+    end_date: string;
+  };
+  atomic?: boolean;
+  operations: ActivityChangeOperation[];
+}
+
+export interface ActivityChangeSnapshot {
+  id: string;
+  activity: string;
+  start_time: string;
+  end_time: string | null;
+  category: string;
+  details: string;
+  mood: string;
+  social: string;
+  location: string;
+  source: Record['source'];
+}
+
+export interface AppliedActivityChange {
+  op_id: string;
+  action: ActivityChangeOperation['action'];
+  record_id: string;
+  before?: ActivityChangeSnapshot;
+  after?: ActivityChangeSnapshot;
+}
+
+export interface ActivityChangeResult {
+  success: true;
+  status: 'applied';
+  batch_id: string;
+  summary: string;
+  applied: AppliedActivityChange[];
+  changed_record_ids: string[];
+}
 
 function dateStartISO(date: string): string {
   const [y, m, d] = date.split('-').map(Number);
@@ -385,6 +450,249 @@ export async function updateRecord(id: string, updates: Partial<Omit<Record, 'id
   if (updated?.source === 'user') {
     await deleteOverlappingRecordsWithDB(database, updated.start_time, updated.end_time, id);
   }
+}
+
+function activitySnapshot(record: Record): ActivityChangeSnapshot {
+  return {
+    id: record.id,
+    activity: record.activity,
+    start_time: record.start_time,
+    end_time: record.end_time,
+    category: record.category,
+    details: record.details,
+    mood: record.mood,
+    social: record.social,
+    location: record.location,
+    source: record.source,
+  };
+}
+
+function resolveActivityChangeTarget(records: Record[], operation: ActivityChangeOperation): Record {
+  if (operation.record_id) {
+    const found = records.find(record => record.id === operation.record_id);
+    if (!found) throw new Error(`操作 ${operation.op_id}：找不到活动 ID ${operation.record_id}`);
+    return found;
+  }
+
+  const name = operation.match?.activity?.trim().toLowerCase();
+  if (!name) throw new Error(`操作 ${operation.op_id}：修改或删除活动必须提供 record_id 或 match.activity`);
+
+  const exact = records.filter(record => record.activity.toLowerCase() === name);
+  const candidates = exact.length > 0
+    ? exact
+    : records.filter(record => record.activity.toLowerCase().includes(name) || name.includes(record.activity.toLowerCase()));
+  if (candidates.length === 0) throw new Error(`操作 ${operation.op_id}：找不到活动「${operation.match?.activity}」`);
+
+  const timeHint = operation.match?.start_time;
+  if (!timeHint) {
+    if (candidates.length > 1) throw new Error(`操作 ${operation.op_id}：找到多个同名活动，请先选择具体活动`);
+    return candidates[0];
+  }
+
+  const hintMs = new Date(timeHint).getTime();
+  if (!Number.isFinite(hintMs)) throw new Error(`操作 ${operation.op_id}：匹配时间格式无效`);
+  const ranked = candidates
+    .map(record => ({ record, distance: Math.abs(new Date(record.start_time).getTime() - hintMs) }))
+    .sort((a, b) => a.distance - b.distance);
+  if (ranked.length > 1 && ranked[0].distance === ranked[1].distance) {
+    throw new Error(`操作 ${operation.op_id}：时间匹配到多个活动，请先选择具体活动`);
+  }
+  return ranked[0].record;
+}
+
+function validateActivityChangeRecord(record: Record, startDate: string, endDate: string, opId: string): void {
+  if (!record.activity.trim()) throw new Error(`操作 ${opId}：活动名称不能为空`);
+  const recordDate = record.start_time.slice(0, 10);
+  if (recordDate < startDate || recordDate > endDate) {
+    throw new Error(`操作 ${opId}：活动日期必须在 ${startDate} 至 ${endDate} 范围内`);
+  }
+  const start = new Date(record.start_time).getTime();
+  const end = record.end_time ? new Date(record.end_time).getTime() : null;
+  if (!Number.isFinite(start) || (end !== null && !Number.isFinite(end))) {
+    throw new Error(`操作 ${opId}：活动时间格式无效`);
+  }
+  if (end !== null && end <= start) throw new Error(`操作 ${opId}：结束时间必须晚于开始时间`);
+}
+
+export async function applyActivityChanges(input: ActivityChangeRequest): Promise<ActivityChangeResult> {
+  const requestId = input.request_id?.trim();
+  if (!requestId) throw new Error('缺少 request_id');
+  const startDate = input.scope?.start_date ?? input.target_date ?? '';
+  const endDate = input.scope?.end_date ?? input.target_date ?? '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    throw new Error('scope 日期格式必须为 YYYY-MM-DD');
+  }
+  if (startDate > endDate) throw new Error('scope.start_date 不能晚于 scope.end_date');
+  const rangeDays = Math.round((new Date(`${endDate}T00:00:00`).getTime() - new Date(`${startDate}T00:00:00`).getTime()) / 86400000);
+  if (!Number.isFinite(rangeDays) || rangeDays > 31) throw new Error('单次活动修改范围不能超过 31 天');
+  if (!Array.isArray(input.operations) || input.operations.length < 1 || input.operations.length > 20) {
+    throw new Error('operations 数量必须在 1 到 20 之间');
+  }
+  if (input.atomic === false) throw new Error('当前仅支持 atomic=true 的原子批处理');
+
+  const opIds = new Set<string>();
+  for (const operation of input.operations) {
+    if (!operation.op_id?.trim()) throw new Error('每个操作都必须提供 op_id');
+    if (opIds.has(operation.op_id)) throw new Error(`op_id 重复：${operation.op_id}`);
+    opIds.add(operation.op_id);
+    if (!['create', 'update', 'delete'].includes(operation.action)) {
+      throw new Error(`操作 ${operation.op_id}：不支持的 action`);
+    }
+  }
+
+  const database = await getDB();
+  const cached = await database.getFirstAsync<{ result_json: string }>(
+    'SELECT result_json FROM activity_change_batches WHERE request_id = ?',
+    [requestId],
+  );
+  if (cached) return JSON.parse(cached.result_json) as ActivityChangeResult;
+
+  let result: ActivityChangeResult | null = null;
+  await database.withExclusiveTransactionAsync(async txn => {
+    const initialRecords = await txn.getAllAsync<Record>(
+      `SELECT * FROM records
+       WHERE start_time >= ? AND start_time <= ? AND prediction_status != 'rejected'`,
+      [dateStartISO(startDate), dateEndISO(endDate)],
+    );
+    const finalById = new Map(initialRecords.map(record => [record.id, { ...record }]));
+    const changedIds = new Set<string>();
+    const applied: AppliedActivityChange[] = [];
+    const now = toLocalISO(new Date());
+
+    for (const operation of input.operations) {
+      if (operation.action === 'create') {
+        const data = operation.data ?? {};
+        if (!data.activity || !data.start_time) {
+          throw new Error(`操作 ${operation.op_id}：创建活动必须提供 activity 和 start_time`);
+        }
+        const id = generateId();
+        const created: Record = {
+          id,
+          created_at: now,
+          start_time: normalizeRecordTime(data.start_time) ?? '',
+          end_time: normalizeRecordTime(data.end_time),
+          raw_text: '',
+          activity: data.activity.trim(),
+          category: data.category?.trim() || '其他',
+          details: data.details?.trim() || '',
+          mood: data.mood?.trim() || '',
+          social: data.social?.trim() || '',
+          location: data.location?.trim() || '',
+          source: 'user',
+          prediction_status: 'confirmed',
+          prediction_batch_id: null,
+        };
+        validateActivityChangeRecord(created, startDate, endDate, operation.op_id);
+        finalById.set(id, created);
+        changedIds.add(id);
+        applied.push({ op_id: operation.op_id, action: 'create', record_id: id, after: activitySnapshot(created) });
+        continue;
+      }
+
+      const target = resolveActivityChangeTarget(Array.from(finalById.values()), operation);
+      if (operation.action === 'delete') {
+        finalById.delete(target.id);
+        changedIds.add(target.id);
+        applied.push({ op_id: operation.op_id, action: 'delete', record_id: target.id, before: activitySnapshot(target) });
+        continue;
+      }
+
+      const data = operation.data ?? {};
+      if (Object.keys(data).length === 0) throw new Error(`操作 ${operation.op_id}：没有需要更新的字段`);
+      const updated: Record = {
+        ...target,
+        ...data,
+        activity: data.activity?.trim() || target.activity,
+        category: data.category?.trim() || target.category,
+        details: data.details !== undefined ? data.details.trim() : target.details,
+        mood: data.mood !== undefined ? data.mood.trim() : target.mood,
+        social: data.social !== undefined ? data.social.trim() : target.social,
+        location: data.location !== undefined ? data.location.trim() : target.location,
+        start_time: data.start_time !== undefined ? normalizeRecordTime(data.start_time) ?? '' : target.start_time,
+        end_time: data.end_time !== undefined ? normalizeRecordTime(data.end_time) : target.end_time,
+        prediction_status: target.source === 'prediction' ? 'confirmed' : target.prediction_status,
+      };
+      validateActivityChangeRecord(updated, startDate, endDate, operation.op_id);
+      finalById.set(target.id, updated);
+      changedIds.add(target.id);
+      applied.push({
+        op_id: operation.op_id,
+        action: 'update',
+        record_id: target.id,
+        before: activitySnapshot(target),
+        after: activitySnapshot(updated),
+      });
+    }
+
+    const changedActive = Array.from(changedIds)
+      .map(id => finalById.get(id))
+      .filter((record): record is Record => !!record);
+    for (let i = 0; i < changedActive.length; i++) {
+      for (let j = i + 1; j < changedActive.length; j++) {
+        if (recordsOverlap(changedActive[i], changedActive[j])) {
+          throw new Error(`批量结果存在时间重叠：「${changedActive[i].activity}」与「${changedActive[j].activity}」`);
+        }
+      }
+    }
+
+    for (const record of Array.from(finalById.values())) {
+      if (changedIds.has(record.id)) continue;
+      if (changedActive.some(changed => recordsOverlap(changed, record))) {
+        finalById.delete(record.id);
+        changedIds.add(record.id);
+        applied.push({ op_id: 'auto-overlap', action: 'delete', record_id: record.id, before: activitySnapshot(record) });
+      }
+    }
+
+    for (const initial of initialRecords) {
+      if (finalById.has(initial.id)) continue;
+      if (initial.source === 'prediction') {
+        await txn.runAsync("UPDATE records SET prediction_status = 'rejected' WHERE id = ?", [initial.id]);
+      } else {
+        await txn.runAsync('DELETE FROM records WHERE id = ?', [initial.id]);
+      }
+    }
+
+    for (const id of changedIds) {
+      const record = finalById.get(id);
+      if (!record) continue;
+      await txn.runAsync(
+        `INSERT OR REPLACE INTO records
+         (id, created_at, start_time, end_time, raw_text, activity, category, details, mood, social, location, source, prediction_status, prediction_batch_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [record.id, record.created_at, record.start_time, record.end_time, record.raw_text, record.activity,
+         record.category, record.details, record.mood, record.social, record.location, record.source,
+         record.prediction_status, record.prediction_batch_id],
+      );
+    }
+
+    const counts = applied.reduce((acc, item) => {
+      acc[item.action] += 1;
+      return acc;
+    }, { create: 0, update: 0, delete: 0 });
+    const summaryParts = [
+      counts.create ? `创建 ${counts.create} 条` : '',
+      counts.update ? `修改 ${counts.update} 条` : '',
+      counts.delete ? `删除 ${counts.delete} 条` : '',
+    ].filter(Boolean);
+    const batchId = generateId();
+    result = {
+      success: true,
+      status: 'applied',
+      batch_id: batchId,
+      summary: summaryParts.join('，') || '没有变更',
+      applied,
+      changed_record_ids: Array.from(changedIds),
+    };
+    await txn.runAsync(
+      `INSERT INTO activity_change_batches (request_id, batch_id, target_date, result_json, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [requestId, batchId, startDate === endDate ? startDate : `${startDate}..${endDate}`, JSON.stringify(result), now],
+    );
+  });
+
+  if (!result) throw new Error('批量活动修改未完成');
+  return result;
 }
 
 export async function getRecordsForPrediction(startDate: string, endDate: string): Promise<Record[]> {

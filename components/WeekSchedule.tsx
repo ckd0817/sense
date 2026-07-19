@@ -15,6 +15,10 @@ const MIN_DAY_COL_W = 108;
 interface Props {
   weekStart: Date;
   granularity: number;
+  onSelectActivity?: (record: Record) => void;
+  selectedRecordId?: string | null;
+  highlightedRecordIds?: string[];
+  refreshVersion?: number;
 }
 
 function dateStr(d: Date): string {
@@ -30,7 +34,14 @@ function getMonday(d: Date): Date {
   return r;
 }
 
-export default function WeekSchedule({ weekStart: initialMonday, granularity }: Props) {
+export default function WeekSchedule({
+  weekStart: initialMonday,
+  granularity,
+  onSelectActivity,
+  selectedRecordId,
+  highlightedRecordIds = [],
+  refreshVersion = 0,
+}: Props) {
   const [records, setRecords] = useState<Record[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const hScrollRef = useRef<ScrollView>(null);
@@ -51,7 +62,7 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
     setRecords(data);
   }, [dateStr(monday), dateStr(sunday)]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshVersion]);
 
   // Auto-scroll to today
   useEffect(() => {
@@ -99,6 +110,8 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
     const height = durationHours * HOUR_HEIGHT;
     const bg = CategoryColors[rec.category] || CategoryColors['其他'];
     const isOpen = expanded === rec.id;
+    const isSelected = selectedRecordId === rec.id;
+    const isHighlighted = highlightedRecordIds.includes(rec.id);
     const blockHeight = Math.max(height, slotHeight);
     const compact = blockHeight < 24;
     const titleLines = blockHeight >= 72 ? 3 : blockHeight >= 42 ? 2 : 1;
@@ -108,8 +121,15 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
     return (
       <TouchableOpacity
         key={rec.id}
-        style={[s.block, compact && s.blockCompact, { top, height: blockHeight, backgroundColor: bg }]}
-        onPress={() => toggleExpand(rec.id)}
+        style={[
+          s.block,
+          compact && s.blockCompact,
+          { top, height: blockHeight, backgroundColor: bg },
+          isSelected && s.blockSelected,
+          isHighlighted && s.blockHighlighted,
+        ]}
+        onPress={() => onSelectActivity ? onSelectActivity(rec) : toggleExpand(rec.id)}
+        onLongPress={() => toggleExpand(rec.id)}
         activeOpacity={0.7}
       >
         <Text style={[s.blockLabel, compact && s.blockLabelCompact]} numberOfLines={titleLines}>{rec.activity}</Text>
@@ -127,7 +147,7 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
 
   return (
     <View style={s.wrap}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} ref={hScrollRef}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} ref={hScrollRef} keyboardShouldPersistTaps="always">
         <View style={{ width: contentWidth }}>
           {/* Week header */}
           <View style={s.headerRow}>
@@ -147,7 +167,7 @@ export default function WeekSchedule({ weekStart: initialMonday, granularity }: 
           </View>
 
           {/* Grid */}
-          <ScrollView style={s.gridScroll} showsVerticalScrollIndicator={false}>
+          <ScrollView style={s.gridScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <View style={[s.grid, { height: totalHeight }]}>
               {/* Time labels */}
               <View style={s.timeLabelCol}>
@@ -219,7 +239,11 @@ const s = StyleSheet.create({
     paddingVertical: 5,
     overflow: 'hidden',
     justifyContent: 'flex-start',
+    borderWidth: 2,
+    borderColor: 'transparent',
   },
+  blockSelected: { borderColor: Colors.primary },
+  blockHighlighted: { borderColor: Colors.success },
   blockCompact: {
     paddingHorizontal: 5,
     paddingVertical: 2,

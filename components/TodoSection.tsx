@@ -18,6 +18,7 @@ export default function TodoSection({ todos, currentDate, onChanged }: Props) {
   const [newTitle, setNewTitle] = useState('');
   const [habitMode, setHabitMode] = useState(false);
   const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
+  const [completedOpen, setCompletedOpen] = useState(false);
   const swipeRef = React.useRef<Swipeable>(null);
 
   const pending = todos.filter(t => !t.last_completed);
@@ -85,7 +86,7 @@ export default function TodoSection({ todos, currentDate, onChanged }: Props) {
       <View style={s.wrapper}>
         <View style={s.header}>
           <Text style={s.headerTitle}>待办</Text>
-          <TouchableOpacity onPress={() => setAdding(true)}>
+          <TouchableOpacity style={s.headerAction} onPress={() => setAdding(true)} accessibilityRole="button" accessibilityLabel="添加待办">
             <Ionicons name="add" size={22} color={Colors.primary} />
           </TouchableOpacity>
         </View>
@@ -104,7 +105,7 @@ export default function TodoSection({ todos, currentDate, onChanged }: Props) {
           待办
           {pending.length > 0 && <Text style={s.count}> {pending.length}</Text>}
         </Text>
-        <TouchableOpacity onPress={() => setAdding(true)}>
+        <TouchableOpacity style={s.headerAction} onPress={() => setAdding(true)} accessibilityRole="button" accessibilityLabel="添加待办">
           <Ionicons name="add" size={22} color={Colors.primary} />
         </TouchableOpacity>
       </View>
@@ -114,7 +115,18 @@ export default function TodoSection({ todos, currentDate, onChanged }: Props) {
       {completed.length > 0 && (
         <>
           <View style={s.divider} />
-          {completed.map(renderItem)}
+          <TouchableOpacity
+            style={s.completedToggle}
+            onPress={() => setCompletedOpen(open => !open)}
+            activeOpacity={0.65}
+            accessibilityRole="button"
+            accessibilityLabel={`${completedOpen ? '收起' : '展开'}已完成待办，共 ${completed.length} 项`}
+          >
+            <Ionicons name="checkmark-circle-outline" size={18} color={Colors.hint} />
+            <Text style={s.completedLabel}>已完成 {completed.length}</Text>
+            <Ionicons name={completedOpen ? 'chevron-up' : 'chevron-down'} size={17} color={Colors.hint} />
+          </TouchableOpacity>
+          {completedOpen ? completed.map(renderItem) : null}
         </>
       )}
 
@@ -173,6 +185,14 @@ const s = StyleSheet.create({
     fontSize: F.md,
     fontWeight: '600',
     color: Colors.text,
+  },
+  headerAction: {
+    width: 40,
+    height: 40,
+    marginVertical: -S.sm,
+    marginRight: -S.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   count: {
     fontSize: F.sm,
@@ -234,6 +254,17 @@ const s = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: Colors.divider,
     marginVertical: S.xs,
+  },
+  completedToggle: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.sm,
+  },
+  completedLabel: {
+    flex: 1,
+    fontSize: F.sm,
+    color: Colors.hint,
   },
   emptyAdd: {
     flexDirection: 'row',

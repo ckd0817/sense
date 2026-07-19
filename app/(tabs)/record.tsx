@@ -1,10 +1,10 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, Alert, Modal, AppState } from 'react-native';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, Alert, Modal, AppState, DeviceEventEmitter } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import { getChatMessages, addChatMessage, clearChatMessages, getChatDate, ChatMessage } from '../../lib/db';
-import { streamAgent, AgentMessage, AgentRequestContext } from '../../lib/agent';
+import { getChatMessages, addChatMessage, clearChatMessages, getChatDate, ChatMessage, Record as ActivityRecord } from '../../lib/db';
+import { streamAgent, AgentMessage, AgentRequestContext, ToolExecutionResult, ActivityDateRange, FOCUS_ASSISTANT_EVENT } from '../../lib/agent';
 import { Colors, S, R, F } from '../../constants/theme';
 
 // --- Lightweight Markdown renderer ---
@@ -74,7 +74,17 @@ interface ToolInfo {
   name: string;
   success?: boolean;
   args?: Record<string, unknown>;
-  result?: { success: boolean; message?: string };
+  result?: ToolExecutionResult;
+}
+
+export interface RecordScreenProps {
+  embedded?: boolean;
+  inline?: boolean;
+  contextDate?: string;
+  visibleDateRange?: ActivityDateRange;
+  selectedActivities?: ActivityRecord[];
+  onClose?: () => void;
+  onClearSelection?: () => void;
 }
 
 interface Bubble {
@@ -130,18 +140,27 @@ function msgToBubble(m: ChatMessage): Bubble | null {
   };
 }
 
-export default function RecordScreen() {
-  const { date: routeDate } = useLocalSearchParams<{ date?: string }>();
+export default function RecordScreen({
+  embedded = false,
+  inline = false,
+  contextDate,
+  visibleDateRange,
+  selectedActivities = [],
+  onClose,
+  onClearSelection,
+}: RecordScreenProps) {
+  const { date: routeDateParam } = useLocalSearchParams<{ date?: string }>();
+  const routeDate = contextDate || routeDateParam;
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [inlineReplyExpanded, setInlineReplyExpanded] = useState(false);
   const flatRef = useRef<FlatList>(null);
+  const inputRef = useRef<TextInput>(null);
   const chatDateRef = useRef('');
   const historyRef = useRef<AgentMessage[]>([]);
   const busyRef = useRef(busy);
   busyRef.current = busy;
-  const bubblesRef = useRef(bubbles);
-  bubblesRef.current = bubbles;
   const routeDateRef = useRef(routeDate);
   routeDateRef.current = routeDate;
 
@@ -176,8 +195,8 @@ export default function RecordScreen() {
 
   useEffect(() => {
     const syncChatDate = () => {
-      // 有进行中对话时不切换 chat_date，避免跨日打断上下文
-      if (routeDateRef.current || busyRef.current || bubblesRef.current.length > 0) return;
+      // 历史会话保持指定日期；当前会话在请求结束后自动跨日。
+      if (routeDateRef.current || busyRef.current) return;
       const currentDate = getChatDate();
       if (chatDateRef.current && chatDateRef.current !== currentDate) {
         loadChat(currentDate);
@@ -195,6 +214,19 @@ export default function RecordScreen() {
       subscription.remove();
     };
   }, [loadChat]);
+
+  useEffect(() => {
+    if (!inline) return;
+    const subscription = DeviceEventEmitter.addListener(FOCUS_ASSISTANT_EVENT, () => {
+      inputRef.current?.blur();
+      setTimeout(() => inputRef.current?.focus(), 60);
+    });
+    return () => subscription.remove();
+  }, [inline]);
+
+  useEffect(() => {
+    setInlineReplyExpanded(false);
+  }, [bubbles.length]);
 
   const scrollToBottom = () => {
     setTimeout(() => flatRef.current?.scrollToEnd?.({ animated: true }), 50);
@@ -229,37 +261,29 @@ export default function RecordScreen() {
     try {
       let fullContent = '';
       let reasoningContent = '';
-      let statusText = '正在连接模型...';
       const toolInfos: ToolInfo[] = [];
-      const targetDate = requestDate !== getChatDate() ? requestDate : undefined;
-
-      for await (const event of streamAgent(requestHistory, targetDate)) {
+      for await (const event of streamAgent(requestHistory, requestDate, selectedActivities, visibleDateRange)) {
         if (event.type === 'request_context') {
           setBubbles(prev => prev.map(b =>
             b.id === asstId ? { ...b, context: event.context, contextOpen: false } : b
           ));
-        } else if (event.type === 'text_delta') {
-          fullContent += event.content;
+        } else if (event.type === 'round_complete') {
+          fullContent = event.content;
+          reasoningContent = event.reasoning;
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, text: fullContent } : b
-          ));
-        } else if (event.type === 'reasoning_delta') {
-          reasoningContent += event.content;
-          statusText = '模型正在思考...';
-          setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, reasoning: reasoningContent, status: statusText, thinkingOpen: true } : b
+            b.id === asstId
+              ? { ...b, text: fullContent, reasoning: reasoningContent, thinkingOpen: !!reasoningContent }
+              : b
           ));
         } else if (event.type === 'status') {
-          statusText = event.content;
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, status: statusText } : b
+            b.id === asstId ? { ...b, status: event.content } : b
           ));
         } else if (event.type === 'tool_call') {
           const tool: ToolInfo = { id: event.id, name: event.name, args: event.args };
           toolInfos.push(tool);
-          statusText = `正在执行：${toolLabel[event.name] || event.name}`;
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, status: statusText, thinkingOpen: true } : b
+            b.id === asstId ? { ...b, status: `正在执行：${toolLabel[event.name] || event.name}`, thinkingOpen: true } : b
           ));
           upsertTool(asstId, tool);
         } else if (event.type === 'tool_result') {
@@ -273,11 +297,15 @@ export default function RecordScreen() {
           } else {
             toolInfos.push(nextTool);
           }
-          statusText = event.result.success
-            ? `已完成：${toolLabel[event.name] || event.name}`
-            : `执行失败：${toolLabel[event.name] || event.name}`;
           setBubbles(prev => prev.map(b =>
-            b.id === asstId ? { ...b, status: statusText } : b
+            b.id === asstId
+              ? {
+                  ...b,
+                  status: event.result.success
+                    ? `已完成：${toolLabel[event.name] || event.name}`
+                    : `执行失败：${toolLabel[event.name] || event.name}`,
+                }
+              : b
           ));
           upsertTool(asstId, nextTool);
         } else if (event.type === 'done') {
@@ -393,9 +421,7 @@ export default function RecordScreen() {
   };
 
   const toolLabel: Record<string, string> = {
-    create_activity: '记录活动',
-    update_activity: '修改活动',
-    delete_activity: '删除活动',
+    apply_activity_changes: '更新活动',
     create_todo: '创建待办',
     update_todo: '修改待办',
     delete_todo: '删除待办',
@@ -406,12 +432,14 @@ export default function RecordScreen() {
     details: '详情', mood: '心情', social: '社交', location: '地点',
     title: '标题', recurring: '每日重复', scheduled_time: '计划时间',
     reminder_advance: '提前提醒', completed: '已完成', new_title: '新标题',
+    request_id: '请求 ID', target_date: '目标日期', scope: '日期范围', atomic: '原子执行', operations: '活动变更',
   };
 
   const formatFieldValue = (key: string, value: unknown): string => {
     if (value === null || value === undefined || value === '') return '-';
     if (typeof value === 'boolean') return value ? '是' : '否';
     if (typeof value === 'number') return key === 'reminder_advance' ? `${value} 分钟` : String(value);
+    if (typeof value === 'object') return formatJson(value);
     const str = String(value);
     if ((key.endsWith('_time') || key === 'scheduled_time') && str.includes('T')) {
       const d = new Date(str);
@@ -442,6 +470,12 @@ export default function RecordScreen() {
     } catch {
       return String(value);
     }
+  };
+
+  const getToolResultMessage = (result?: ToolExecutionResult): string => {
+    if (!result) return '';
+    if ('summary' in result) return result.summary;
+    return result.message || '';
   };
 
   const renderContext = (item: Bubble) => {
@@ -546,16 +580,140 @@ export default function RecordScreen() {
   );
 
   const router = useRouter();
+  const titleDate = routeDate ? String(routeDate) : getChatDate();
+  const title = titleDate !== getChatDate()
+    ? (() => { const d = new Date(titleDate + 'T00:00:00'); return `${d.getMonth() + 1}月${d.getDate()}日 助手`; })()
+    : '活动助手';
+  const selectedLabel = selectedActivities.length === 1
+    ? selectedActivities[0].activity
+    : `${selectedActivities.length} 个活动`;
+
+  if (inline) {
+    const latestAssistant = [...bubbles].reverse().find(item => item.role === 'assistant');
+    const latestTool = latestAssistant?.tools ? [...latestAssistant.tools].reverse().find(tool => tool.result) : undefined;
+    const latestReply = latestAssistant?.text
+      || (latestTool?.result ? getToolResultMessage(latestTool.result) : '')
+      || latestAssistant?.status
+      || '';
+    const trimmedReply = latestReply.trim();
+    const canExpandConversation = bubbles.length > 0;
+    const shouldTrimReply = trimmedReply.length > 64 || trimmedReply.split('\n').length > 3;
+    const collapsedReply = shouldTrimReply ? `…${trimmedReply.slice(-64)}` : trimmedReply;
+
+    return (
+      <View style={s.inlinePage}>
+        {latestReply ? (
+          inlineReplyExpanded ? (
+            <View style={s.inlineConversationPanel}>
+              <TouchableOpacity
+                style={s.inlineConversationHeader}
+                onPress={() => setInlineReplyExpanded(false)}
+                activeOpacity={0.65}
+                accessibilityRole="button"
+                accessibilityLabel="收起对话"
+              >
+                <View style={s.inlineConversationTitleGroup}>
+                  <Ionicons name="chatbubbles-outline" size={17} color={Colors.primary} />
+                  <Text style={s.inlineConversationTitle}>对话记录</Text>
+                  <Text style={s.inlineConversationCount}>{bubbles.length} 条</Text>
+                </View>
+                <Ionicons name="chevron-down" size={17} color={Colors.hint} />
+              </TouchableOpacity>
+              <FlatList
+                ref={flatRef}
+                style={s.inlineConversation}
+                contentContainerStyle={s.inlineConversationContent}
+                data={bubbles}
+                keyExtractor={item => item.id}
+                renderItem={renderItem}
+                nestedScrollEnabled
+                showsVerticalScrollIndicator
+                keyboardShouldPersistTaps="handled"
+                onContentSizeChange={scrollToBottom}
+              />
+            </View>
+          ) : (
+            <View style={s.inlineReply}>
+              <Ionicons
+                name={latestAssistant?.error ? 'alert-circle-outline' : busy ? 'sparkles-outline' : 'checkmark-circle-outline'}
+                size={17}
+                color={latestAssistant?.error ? '#D32F2F' : Colors.primary}
+              />
+              <TouchableOpacity
+                style={s.inlineReplyPreview}
+                onPress={() => canExpandConversation && setInlineReplyExpanded(true)}
+                activeOpacity={canExpandConversation ? 0.65 : 1}
+                disabled={!canExpandConversation}
+                accessibilityRole={canExpandConversation ? 'button' : undefined}
+                accessibilityLabel={canExpandConversation ? '展开完整对话' : undefined}
+              >
+                <Text style={s.inlineReplyText} numberOfLines={3}>{collapsedReply}</Text>
+              </TouchableOpacity>
+              {canExpandConversation ? (
+                <TouchableOpacity
+                  style={s.inlineReplyToggle}
+                  onPress={() => setInlineReplyExpanded(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="展开完整对话"
+                >
+                  <Ionicons name="chevron-up" size={17} color={Colors.hint} />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          )
+        ) : null}
+
+        {selectedActivities.length > 0 ? (
+          <View style={s.inlineSelected}>
+            <Ionicons name="locate-outline" size={15} color={Colors.primary} />
+            <Text style={s.inlineSelectedText} numberOfLines={1}>关联：{selectedLabel}</Text>
+            {onClearSelection ? (
+              <TouchableOpacity onPress={onClearSelection} accessibilityLabel="清除活动上下文" hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close" size={17} color={Colors.hint} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
+
+        <View style={[s.inputBar, s.inlineInputBar]}>
+          <TextInput
+            ref={inputRef}
+            style={[s.input, s.inlineInput]}
+            value={text}
+            onChangeText={setText}
+            placeholder="记录或修正活动..."
+            placeholderTextColor={Colors.hint}
+            multiline
+            maxLength={2000}
+            editable={!busy}
+            scrollEnabled
+          />
+          <TouchableOpacity style={[s.sendBtn, (!text.trim() || busy) && s.sendOff]} onPress={send} disabled={!text.trim() || busy} activeOpacity={0.7}>
+            {busy ? <Text style={s.sendText}>...</Text> : <Ionicons name="arrow-up" size={20} color="#fff" />}
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   return (
-    <SafeAreaView style={s.page} edges={['top']}>
-      <KeyboardAvoidingView style={s.inner} behavior="padding">
+    <SafeAreaView style={[s.page, embedded && s.embeddedPage]} edges={embedded ? ['bottom'] : ['top']}>
+      <KeyboardAvoidingView style={s.inner} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={s.header}>
-          <Text style={s.headerTitle}>{routeDate && String(routeDate) !== getChatDate() ? (() => { const d = new Date(String(routeDate) + 'T00:00:00'); return `${d.getMonth() + 1}月${d.getDate()}日 对话`; })() : '对话'}</Text>
+          <View style={s.headerTitleRow}>
+            {embedded && (
+              <TouchableOpacity style={s.headerBtn} onPress={onClose} accessibilityLabel="关闭助手">
+                <Ionicons name="chevron-down" size={22} color={Colors.primary} />
+              </TouchableOpacity>
+            )}
+            <Text style={s.headerTitle}>{title}</Text>
+          </View>
           <View style={s.headerRight}>
-            <TouchableOpacity style={s.headerBtn} onPress={() => router.navigate('/history')}>
-              <Ionicons name="time-outline" size={20} color={Colors.hint} />
-            </TouchableOpacity>
+            {!embedded && (
+              <TouchableOpacity style={s.headerBtn} onPress={() => router.navigate('/history')}>
+                <Ionicons name="time-outline" size={20} color={Colors.hint} />
+              </TouchableOpacity>
+            )}
             {bubbles.length > 0 && (
               <TouchableOpacity style={s.headerBtn} onPress={handleClear}>
                 <Ionicons name="trash-outline" size={18} color={Colors.hint} />
@@ -564,10 +722,27 @@ export default function RecordScreen() {
           </View>
         </View>
 
+        {selectedActivities.length > 0 && (
+          <View style={s.selectedContext}>
+            <View style={s.selectedIcon}>
+              <Ionicons name="locate" size={16} color={Colors.primary} />
+            </View>
+            <View style={s.selectedTextWrap}>
+              <Text style={s.selectedEyebrow}>正在修正</Text>
+              <Text style={s.selectedTitle} numberOfLines={1}>{selectedLabel}</Text>
+            </View>
+            {onClearSelection && (
+              <TouchableOpacity style={s.selectedClose} onPress={onClearSelection} accessibilityLabel="清除活动上下文">
+                <Ionicons name="close" size={18} color={Colors.hint} />
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
         {bubbles.length === 0 ? (
           <View style={s.empty}>
             <Ionicons name="chatbubble-ellipses-outline" size={48} color={Colors.divider} />
-            <Text style={s.emptyText}>说点什么开始记录吧</Text>
+            <Text style={s.emptyText}>{selectedActivities.length > 0 ? '直接描述这条活动哪里不对' : '说点什么开始记录吧'}</Text>
           </View>
         ) : (
           <FlatList
@@ -582,10 +757,11 @@ export default function RecordScreen() {
 
         <View style={s.inputBar}>
           <TextInput
+            ref={inputRef}
             style={s.input}
             value={text}
             onChangeText={setText}
-            placeholder="说点什么..."
+            placeholder={selectedActivities.length > 0 ? `修正「${selectedLabel}」...` : '记录或修正活动...'}
             placeholderTextColor={Colors.hint}
             multiline
             maxLength={2000}
@@ -624,10 +800,10 @@ export default function RecordScreen() {
                     {detailTool.success === undefined ? '执行中' : detailTool.success ? '成功' : '失败'}
                   </Text>
                 </View>
-                {detailTool.result?.message ? (
+                {getToolResultMessage(detailTool.result) ? (
                   <View style={s.fieldRow}>
                     <Text style={s.fieldLabel}>结果信息</Text>
-                    <Text style={s.fieldValue}>{detailTool.result.message}</Text>
+                    <Text style={s.fieldValue}>{getToolResultMessage(detailTool.result)}</Text>
                   </View>
                 ) : null}
               </View>
@@ -643,7 +819,91 @@ export default function RecordScreen() {
 
 const s = StyleSheet.create({
   page: { flex: 1, backgroundColor: Colors.bg },
+  embeddedPage: { borderTopLeftRadius: R.lg, borderTopRightRadius: R.lg, overflow: 'hidden' },
   inner: { flex: 1 },
+  inlinePage: {
+    flexShrink: 0,
+    backgroundColor: Colors.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.divider,
+  },
+  inlineReply: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: S.sm,
+    paddingHorizontal: S.lg,
+    paddingTop: S.sm,
+  },
+  inlineReplyText: {
+    color: Colors.subtext,
+    fontSize: F.sm,
+    lineHeight: 19,
+  },
+  inlineReplyPreview: { flex: 1 },
+  inlineConversation: {
+    height: 320,
+  },
+  inlineConversationContent: {
+    paddingHorizontal: S.lg,
+    paddingTop: S.sm,
+    paddingBottom: S.md,
+  },
+  inlineConversationPanel: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.divider,
+  },
+  inlineConversationHeader: {
+    height: 44,
+    paddingHorizontal: S.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  inlineConversationTitleGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.sm,
+  },
+  inlineConversationTitle: {
+    fontSize: F.sm,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  inlineConversationCount: {
+    fontSize: F.xs,
+    color: Colors.hint,
+  },
+  inlineReplyToggle: {
+    width: 28,
+    height: 28,
+    marginTop: -S.xs,
+    marginRight: -S.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inlineSelected: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.xs,
+    marginHorizontal: S.lg,
+    marginTop: S.sm,
+    paddingHorizontal: S.sm,
+    height: 30,
+    borderRadius: R.sm,
+    backgroundColor: 'rgba(0,113,227,0.07)',
+  },
+  inlineSelectedText: { flex: 1, fontSize: F.xs, color: Colors.primary },
+  inlineInputBar: {
+    borderTopWidth: 0,
+    paddingTop: S.sm,
+    paddingBottom: S.sm,
+  },
+  inlineInput: {
+    minHeight: 40,
+    maxHeight: 56,
+    paddingVertical: S.sm,
+    textAlignVertical: 'center',
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -652,9 +912,34 @@ const s = StyleSheet.create({
     paddingTop: S.md,
     paddingBottom: S.sm,
   },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center' },
   headerTitle: { fontSize: F.lg, fontWeight: '600', color: Colors.text },
   headerRight: { flexDirection: 'row', gap: S.xs },
   headerBtn: { padding: S.sm },
+  selectedContext: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: S.lg,
+    marginBottom: S.sm,
+    paddingHorizontal: S.md,
+    paddingVertical: S.sm,
+    borderRadius: R.md,
+    borderWidth: 1,
+    borderColor: 'rgba(0,113,227,0.24)',
+    backgroundColor: 'rgba(0,113,227,0.07)',
+  },
+  selectedIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.surface,
+  },
+  selectedTextWrap: { flex: 1, marginLeft: S.sm },
+  selectedEyebrow: { fontSize: F.xs, color: Colors.primary, fontWeight: '600' },
+  selectedTitle: { fontSize: F.sm, color: Colors.text, marginTop: 1 },
+  selectedClose: { padding: S.sm, marginRight: -S.sm },
   list: {
     paddingHorizontal: S.lg,
     paddingBottom: S.lg,

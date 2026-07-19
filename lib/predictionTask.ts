@@ -1,6 +1,6 @@
 import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
-import { ensureDailyPrediction } from './prediction';
+import { ensureDailyPrediction, PredictionRunResult } from './prediction';
 
 const DAILY_PREDICTION_TASK = 'sense-daily-prediction';
 
@@ -23,6 +23,6 @@ export async function registerPredictionBackgroundTask(): Promise<void> {
   });
 }
 
-export async function runForegroundPredictionCatchup(): Promise<void> {
-  await ensureDailyPrediction();
+export async function runForegroundPredictionCatchup(): Promise<PredictionRunResult> {
+  return ensureDailyPrediction();
 }

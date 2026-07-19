@@ -1,15 +1,16 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { View, Text, FlatList, StyleSheet, RefreshControl, LayoutAnimation, TouchableOpacity, AppState, DeviceEventEmitter } from 'react-native';
+import { View, Text, FlatList, StyleSheet, RefreshControl, LayoutAnimation, TouchableOpacity, AppState, DeviceEventEmitter, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { getGranularity, getRecordsByDate, getTodosByDate, Record, Todo } from '../../lib/db';
-import { DATA_CHANGED_EVENT } from '../../lib/agent';
+import { ActivityDateRange, DATA_CHANGED_EVENT, FOCUS_ASSISTANT_EVENT } from '../../lib/agent';
 import { Colors, S, R, F } from '../../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 import ActivityBlock from '../../components/ActivityBlock';
 import TodoSection from '../../components/TodoSection';
 import WeekSchedule from '../../components/WeekSchedule';
+import RecordScreen from './record';
 
 function dateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -39,12 +40,18 @@ export default function TodayScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0);
   const [granularity, setGran] = useState(30);
-  const [selectedDate, setSelectedDate] = useState(dateStr(new Date()));
+  const [currentDate, setCurrentDate] = useState(dateStr(new Date()));
+  const [selectedDate, setSelectedDate] = useState(currentDate);
+  const [selectedActivity, setSelectedActivity] = useState<Record | null>(null);
+  const [highlightedRecordIds, setHighlightedRecordIds] = useState<string[]>([]);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedDateRef = useRef(selectedDate);
   selectedDateRef.current = selectedDate;
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
+  const currentDateRef = useRef(currentDate);
+  currentDateRef.current = currentDate;
+  const followTodayRef = useRef(true);
 
   const loadDate = useCallback(async (date: string) => {
     const [r, t] = await Promise.all([getRecordsByDate(date), getTodosByDate(date)]);
@@ -66,7 +73,10 @@ export default function TodayScreen() {
   useEffect(() => {
     const syncToday = () => {
       const today = dateStr(new Date());
-      if (modeRef.current === 'today' && selectedDateRef.current !== today) {
+      if (currentDateRef.current === today) return;
+      currentDateRef.current = today;
+      setCurrentDate(today);
+      if (followTodayRef.current) {
         setSelectedDate(today);
       }
     };
@@ -84,11 +94,27 @@ export default function TodayScreen() {
   }, []);
 
   useEffect(() => {
-    const subscription = DeviceEventEmitter.addListener(DATA_CHANGED_EVENT, () => {
+    const subscription = DeviceEventEmitter.addListener(DATA_CHANGED_EVENT, (payload?: { changedRecordIds?: string[] }) => {
       loadDate(selectedDateRef.current);
+      setRefreshVersion(version => version + 1);
+      const changedIds = payload?.changedRecordIds ?? [];
+      if (changedIds.length > 0) {
+        setHighlightedRecordIds(changedIds);
+        if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = setTimeout(() => setHighlightedRecordIds([]), 2400);
+      }
     });
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
   }, [loadDate]);
+
+  useEffect(() => {
+    if (!selectedActivity) return;
+    const refreshed = records.find(record => record.id === selectedActivity.id);
+    setSelectedActivity(refreshed ?? null);
+  }, [records, selectedActivity?.id]);
 
   const switchTo = (m: 'today' | 'history') => {
     if (m === mode) return;
@@ -110,14 +136,17 @@ export default function TodayScreen() {
       }
     });
 
-  const now = new Date();
-  const todayStr_ = dateStr(now);
-  const isToday = selectedDate === todayStr_;
+  const now = new Date(`${currentDate}T12:00:00`);
+  const isToday = selectedDate === currentDate;
   const selDate = new Date(selectedDate + 'T00:00:00');
 
-  const goPrev = () => setSelectedDate(dateStr(addDays(selDate, -1)));
-  const goNext = () => setSelectedDate(dateStr(addDays(selDate, 1)));
-  const goToday = () => setSelectedDate(todayStr_);
+  const selectDate = (date: string) => {
+    followTodayRef.current = date === currentDateRef.current;
+    setSelectedDate(date);
+  };
+  const goPrev = () => selectDate(dateStr(addDays(selDate, -1)));
+  const goNext = () => selectDate(dateStr(addDays(selDate, 1)));
+  const goToday = () => selectDate(currentDateRef.current);
 
   // Week navigation
   const weekMonday = new Date(getMonday(now));
@@ -135,14 +164,36 @@ export default function TodayScreen() {
   const weekdayLabel = `周${WEEKDAYS[selDate.getDay()]}`;
 
   const listHeader = (
-    <>
-      {todos.length > 0 ? <TodoSection todos={todos} currentDate={selectedDate} onChanged={() => loadDate(selectedDate)} /> : null}
-    </>
+    <TodoSection todos={todos} currentDate={selectedDate} onChanged={() => loadDate(selectedDate)} />
   );
+
+  const focusAssistant = (record?: Record) => {
+    if (record) {
+      setSelectedActivity(record);
+    }
+    requestAnimationFrame(() => DeviceEventEmitter.emit(FOCUS_ASSISTANT_EVENT));
+  };
+
+  const clearAssistantSelection = () => {
+    setSelectedActivity(null);
+  };
+
+  const visibleDateRange: ActivityDateRange = mode === 'today'
+    ? { start_date: selectedDate, end_date: selectedDate }
+    : { start_date: dateStr(weekMonday), end_date: dateStr(weekSunday) };
+
+  useEffect(() => {
+    if (!selectedActivity) return;
+    const activityDate = dateStr(new Date(selectedActivity.start_time));
+    if (activityDate < visibleDateRange.start_date || activityDate > visibleDateRange.end_date) {
+      setSelectedActivity(null);
+    }
+  }, [selectedActivity, visibleDateRange.start_date, visibleDateRange.end_date]);
 
   return (
     <GestureDetector gesture={pinchGesture}>
-      <SafeAreaView style={s.page} edges={['top']}>
+      <KeyboardAvoidingView style={s.page} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <SafeAreaView style={s.page} edges={['top']}>
         {mode === 'today' ? (
           <>
             <View style={s.header}>
@@ -171,7 +222,15 @@ export default function TodayScreen() {
             <FlatList
               data={records}
               keyExtractor={item => item.id}
-              renderItem={({ item }) => <ActivityBlock record={item} onChanged={() => loadDate(selectedDate)} />}
+              renderItem={({ item }) => (
+                <ActivityBlock
+                  record={item}
+                  onChanged={() => loadDate(selectedDate)}
+                  onSelect={focusAssistant}
+                  selected={selectedActivity?.id === item.id}
+                  highlighted={highlightedRecordIds.includes(item.id)}
+                />
+              )}
               ListHeaderComponent={listHeader}
               ListEmptyComponent={
                 <View style={s.empty}>
@@ -180,6 +239,8 @@ export default function TodayScreen() {
                 </View>
               }
               contentContainerStyle={s.list}
+              keyboardShouldPersistTaps="always"
+              keyboardDismissMode="none"
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadDate(selectedDate); setRefreshing(false); }} tintColor={Colors.hint} />}
             />
           </>
@@ -202,10 +263,25 @@ export default function TodayScreen() {
                 <Text style={s.backTodayText}>下一周</Text>
               </TouchableOpacity>
             )}
-            <WeekSchedule weekStart={weekMonday} granularity={granularity} />
+            <WeekSchedule
+              weekStart={weekMonday}
+              granularity={granularity}
+              onSelectActivity={focusAssistant}
+              selectedRecordId={selectedActivity?.id}
+              highlightedRecordIds={highlightedRecordIds}
+              refreshVersion={refreshVersion}
+            />
           </>
         )}
-      </SafeAreaView>
+
+        <RecordScreen
+          inline
+          visibleDateRange={visibleDateRange}
+          selectedActivities={selectedActivity ? [selectedActivity] : []}
+          onClearSelection={clearAssistantSelection}
+        />
+        </SafeAreaView>
+      </KeyboardAvoidingView>
     </GestureDetector>
   );
 }

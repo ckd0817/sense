@@ -9,6 +9,9 @@ import EditRecordModal from './EditRecordModal';
 interface Props {
   record: Record;
   onChanged: () => void;
+  onSelect?: (record: Record) => void;
+  selected?: boolean;
+  highlighted?: boolean;
 }
 
 function fmtTime(iso: string): string {
@@ -16,7 +19,7 @@ function fmtTime(iso: string): string {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
-export default function ActivityBlock({ record, onChanged }: Props) {
+export default function ActivityBlock({ record, onChanged, onSelect, selected = false, highlighted = false }: Props) {
   const [editing, setEditing] = useState(false);
   const swipeRef = React.useRef<Swipeable>(null);
 
@@ -59,7 +62,12 @@ export default function ActivityBlock({ record, onChanged }: Props) {
   return (
     <>
       <Swipeable ref={swipeRef} renderRightActions={renderRightActions} overshootRight={false} friction={2}>
-        <View style={[s.block, { backgroundColor: bgColor }]}>
+        <TouchableOpacity
+          style={[s.block, { backgroundColor: bgColor }, selected && s.blockSelected, highlighted && s.blockHighlighted]}
+          onPress={() => onSelect?.(record)}
+          activeOpacity={onSelect ? 0.72 : 1}
+          disabled={!onSelect}
+        >
           <View style={s.top}>
             <View style={s.iconWrap}>
               <Ionicons name={iconName as any} size={18} color={Colors.text} />
@@ -82,7 +90,7 @@ export default function ActivityBlock({ record, onChanged }: Props) {
               <Text style={s.predictionText}>预测</Text>
             </View>
           )}
-        </View>
+        </TouchableOpacity>
       </Swipeable>
       <EditRecordModal
         record={record}
@@ -99,7 +107,11 @@ const s = StyleSheet.create({
     borderRadius: R.lg,
     padding: S.md,
     marginBottom: S.sm,
+    borderWidth: 2,
+    borderColor: 'transparent',
   },
+  blockSelected: { borderColor: Colors.primary },
+  blockHighlighted: { borderColor: Colors.success },
   top: {
     flexDirection: 'row',
     alignItems: 'center',

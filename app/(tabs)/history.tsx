@@ -52,6 +52,7 @@ export default function HistoryScreen() {
   };
 
   const toolLabel: Record<string, string> = {
+    apply_activity_changes: '更新活动',
     create_activity: '记录活动',
     update_activity: '修改活动',
     delete_activity: '删除活动',

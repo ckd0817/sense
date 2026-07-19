@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert, Switch, ScrollView, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getAISettings, setAISettings, getReminderTimes, setReminderTimes, getSystemPrompt, setSystemPrompt, getReminderEnabled, setReminderEnabled, AISettings, exportAllRecords, importRecords } from '../../lib/db';
+import { getAISettings, setAISettings, getReminderTimes, setReminderTimes, getSystemPrompt, setSystemPrompt, getReminderEnabled, setReminderEnabled, AISettings, exportAllRecords, importRecords, getPredictionBatchByDate, deletePredictionBatch, PredictionBatch } from '../../lib/db';
 import { testConnection } from '../../lib/ai';
 import { DEFAULT_SYSTEM_PROMPT } from '../../lib/agent';
+import { runForegroundPredictionCatchup } from '../../lib/predictionTask';
 import { Colors, S, R, F } from '../../constants/theme';
 import { Paths, File, Directory } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -118,6 +119,8 @@ export default function SettingsScreen() {
 
   const [accessibilityOn, setAccessibilityOn] = useState(false);
   const [notifOn, setNotifOn] = useState(false);
+  const [predicting, setPredicting] = useState(false);
+  const [batch, setBatch] = useState<PredictionBatch | null>(null);
 
   const checkStatus = async () => {
     const notif = await import('../../lib/notifications');
@@ -126,6 +129,54 @@ export default function SettingsScreen() {
   };
 
   useEffect(() => { checkStatus(); }, [remindOn]);
+
+  const loadTodayBatch = useCallback(async () => {
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    setBatch(await getPredictionBatchByDate(today));
+  }, []);
+
+  useEffect(() => { loadTodayBatch(); }, [loadTodayBatch]);
+
+  const handlePredictNow = async () => {
+    setPredicting(true);
+    try {
+      if (batch?.status === 'generating') {
+        await deletePredictionBatch(batch.id);
+        setBatch(null);
+      }
+      const result = await runForegroundPredictionCatchup();
+      if (result.status === 'generated') {
+        Alert.alert(`已生成 ${result.count ?? 0} 条预测`);
+      } else if (result.status === 'skipped') {
+        if (result.reason === 'missing_ai_settings') {
+          Alert.alert('跳过', '请先配置上方的 AI 接口');
+        } else {
+          Alert.alert('跳过', `今天已生成过（${result.reason}）`);
+        }
+      } else {
+        Alert.alert('失败', result.reason || '未知错误');
+      }
+      await loadTodayBatch();
+    } catch (e) {
+      Alert.alert('失败', e instanceof Error ? e.message : '未知错误');
+    } finally {
+      setPredicting(false);
+    }
+  };
+
+  const batchStatusLabel = (): string => {
+    if (!batch) return '未生成';
+    if (batch.status === 'failed') return `失败：${batch.error?.slice(0, 60) || '未知'}`;
+    if (batch.status === 'completed') return '已生成';
+    if (batch.status === 'confirmed') return '已确认';
+    if (batch.status === 'generating') return '生成中...';
+    if (batch.status === 'rejected') return '已拒绝';
+    return batch.status;
+  };
+
+  const batchStatusGood = batch?.status === 'completed' || batch?.status === 'confirmed';
+  const batchStatusBad = batch?.status === 'failed';
 
   return (
     <SafeAreaView style={s.page} edges={['top']}>
@@ -149,6 +200,19 @@ export default function SettingsScreen() {
             </TouchableOpacity>
             <TouchableOpacity style={[s.saveBtn, saving && s.saveOff]} onPress={save} disabled={saving}><Text style={s.saveText}>{saving ? '...' : '保存'}</Text></TouchableOpacity>
           </View>
+        </View>
+
+        <View style={s.card}>
+          <Text style={s.cardTitle}>AI 预测</Text>
+          <View style={s.statusRow}>
+            <Text style={s.statusLabel}>今天状态</Text>
+            <Text style={[s.statusValue, batchStatusGood ? s.statusOn : batchStatusBad ? s.statusOff : null]}>
+              {batchStatusLabel()}
+            </Text>
+          </View>
+          <TouchableOpacity style={[s.saveBtn, predicting && s.saveOff]} onPress={handlePredictNow} disabled={predicting}>
+            {predicting ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.saveText}>立即生成今日预测</Text>}
+          </TouchableOpacity>
         </View>
 
         <View style={s.card}>
